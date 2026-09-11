@@ -5,7 +5,7 @@ Uses Google's Gemini Vision-Language Model to perform OCR + layout analysis
 in a single API call per page.
 
 Why Gemini:
-- No local OCR models — zero RAM cost on the Zeabur server
+- No local OCR models — zero RAM cost on the app server
 - Native support for Traditional Chinese, Simplified Chinese, Japanese,
   Korean, English, and 100+ other languages
 - Excellent vertical-text recognition
@@ -46,7 +46,7 @@ The tiling strategy:
   - Each tile call goes through the normal retry / rate-limiting path.
   - Duplicate blocks (same text appearing in the overlap zone of two tiles)
     are de-duplicated by NMS-style bbox overlap check.
-  - Tiling is logged at INFO level so you can see it in Zeabur logs.
+  - Tiling is logged at INFO level so you can see it in the deploy logs.
   - The merged result is cached in the normal page cache so downstream
     calls (detect_direction / recognize / get_layout) all see the same data.
 """
@@ -328,8 +328,8 @@ class GeminiOCREngine(OCREngine):
         if not self.api_key:
             raise RuntimeError(
                 "GEMINI_API_KEY environment variable is not set. "
-                "Get a key at https://aistudio.google.com and add it in "
-                "Zeabur's environment variables."
+                "Get a key at https://aistudio.google.com and add it to your "
+                "host's environment variables (Railway: service → Variables)."
             )
         logger.info(f"Initialising Gemini client (model={self.model_name}, rpm={self.rpm_limit})…")
         from google import genai

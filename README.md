@@ -17,7 +17,7 @@ Self-hosted, single-user web app that converts **image-based PDF files and JPG i
 
 ## Why Gemini?
 
-The previous PaddleOCR / Surya implementations needed too much RAM for the Zeabur server. Gemini moves OCR off-server entirely — the worker just sends each page image to Google's API and receives structured JSON back. The Zeabur worker now uses **under 1 GB RAM** and needs no GPU or PyTorch.
+The previous PaddleOCR / Surya implementations needed too much RAM for a small cloud instance. Gemini moves OCR off-server entirely — the worker just sends each page image to Google's API and receives structured JSON back. The worker now uses **under 1 GB RAM** and needs no GPU or PyTorch.
 
 Trade-off: each page = 1 Gemini API call, so **daily free-tier quota matters**. If you pause or a job fails partway through, the OCR results for completed pages are cached — resuming costs zero extra quota for those pages.
 
@@ -41,9 +41,11 @@ The API and Worker run as a **single process** — the worker is a background da
 
 ## Prerequisites
 
-- Zeabur server: any plan with at least **2 GB RAM** is sufficient (the $3/mo 4 GB plan works comfortably)
+- A [Railway](https://railway.com) account — the app is small enough for the Hobby plan (see [Memory Budget](#memory-budget))
 - A **Google account** (Workspace or personal Gmail) for OAuth2 login
 - A **Gemini API key** from Google AI Studio
+
+> Any Docker host works — the app is a single container. The instructions below use Railway; `docker compose up` still works locally and unchanged.
 
 ---
 
@@ -71,12 +73,15 @@ The quota resets at midnight Pacific Time. Each PDF page (or each uploaded JPG) 
 2. Use the same project Gemini created (or any project)
 3. **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**
 4. Application type: **Web application**
-5. Authorised redirect URI: `https://YOUR-ZEABUR-DOMAIN/auth/callback`
+5. Authorised redirect URI: `https://YOUR-DOMAIN/auth/callback`
+   (on Railway this is `https://<service>.up.railway.app/auth/callback` — you can come back and fill this in after Step 4, once Railway has generated the domain)
 6. Copy the **Client ID** and **Client Secret**
 
 ---
 
-## Step 3 — Environment Variables (Zeabur UI)
+## Step 3 — Environment Variables (Railway → service → Variables)
+
+**Required:**
 
 | Variable | Value |
 |---|---|
@@ -85,40 +90,63 @@ The quota resets at midnight Pacific Time. Each PDF page (or each uploaded JPG) 
 | `GOOGLE_CLIENT_SECRET` | OAuth client secret from Step 2 |
 | `ALLOWED_EMAIL` | Your Gmail address |
 | `SECRET_KEY` | Random 32+ char string (`openssl rand -hex 32`) |
-| `BASE_URL` or `APP_BASE_URL` | `https://YOUR-ZEABUR-DOMAIN` (no trailing slash) |
 
-> **No Redis service needed.** The app uses in-process storage by default. If you want persistent state across container restarts, add `REDIS_URL` pointing to an external Redis instance.
+If any of these is missing the container exits at boot with a message naming exactly which ones — check the Deploy Logs.
+
+**Optional:**
+
+| Variable | Value |
+|---|---|
+| `APP_BASE_URL` / `BASE_URL` | Public origin, no trailing slash. **On Railway you can omit this** — the app falls back to `RAILWAY_PUBLIC_DOMAIN`. Set it explicitly once you attach a custom domain. |
+| `DATA_DIR` | Parent of `uploads/`, `outputs/`, `tmp-work/`. Set to a volume mount path (e.g. `/data`) to survive redeploys — see Step 4. |
+| `REDIS_URL` | External Redis. On Railway: add a Redis database to the project and set this to `${{Redis.REDIS_URL}}`. |
+| `PORT` | Injected by Railway automatically. Do not set it. |
+
+> **No Redis service is required.** The app uses in-process storage ([fakeredis](https://github.com/cunla/fakeredis-py)) by default. Job state then lives only in the container, so a redeploy or restart clears the job list — add Redis if you want it to persist.
 
 ---
 
-## Step 4 — Deploy
+## Step 4 — Deploy to Railway
+
+1. Push this repo to GitHub.
+2. In Railway: **New Project → Deploy from GitHub repo**, and pick it.
+3. Railway reads `railway.json` and builds the root `Dockerfile` as **one service** — no Redis or Worker service needed.
+4. **Settings → Networking → Generate Domain** to get a public URL, then add `https://<that-domain>/auth/callback` as the authorised redirect URI in Google Cloud Console (Step 2).
+5. Add the variables from Step 3 and let it redeploy.
+
+`railway.json` pins the deploy settings that matter here:
+
+- `numReplicas: 1` — **required.** The worker runs as a thread inside the API process and (without `REDIS_URL`) keeps job state in memory. A second replica would have its own queue and its own copy of the output files, so downloads would intermittently 404.
+- `healthcheckPath: /health` — Railway waits for this before switching traffic to a new deploy.
+- `restartPolicyType: ON_FAILURE`.
+
+### Persisting uploads and outputs (recommended)
+
+Railway container filesystems are ephemeral: every redeploy starts from a fresh image, so converted PDFs from earlier deploys are gone. To keep them:
+
+1. In the project canvas, right-click the service (or press `⌘K`) → **Attach Volume**, and set the mount path to `/data`.
+2. Add the variable `DATA_DIR=/data`.
+
+The app then writes `/data/uploads`, `/data/outputs` and `/data/tmp-work`. Retention still applies (`upload_retention_hours`, `output_retention_days` in `config.yaml`), so the volume does not grow without bound. Note that a volume also pins the service to one instance, which matches the single-replica requirement above.
+
+### Local development
 
 ```bash
 git clone https://github.com/YOUR-USERNAME/pdf2epub.git
 cd pdf2epub
 
-# Local dev: create a .env file
-cat > .env << EOF
-GEMINI_API_KEY=AIzaSy...
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
-ALLOWED_EMAIL=you@gmail.com
-SECRET_KEY=$(openssl rand -hex 32)
-BASE_URL=https://your-zeabur-domain.com
-EOF
-
+cp .env.example .env      # then fill in the values
 docker compose up -d
 docker compose logs -f
 ```
-
-On Zeabur, push the repo to GitHub, create a new project, connect the repo, and set the env variables in Zeabur's UI. Zeabur detects the root `Dockerfile` and deploys it as **a single service** — no Redis or Worker service needed.
 
 ---
 
 ## Step 5 — Verify
 
-1. `https://YOUR-ZEABUR-DOMAIN/health` → `{"status":"ok","redis":true}`
-2. `https://YOUR-ZEABUR-DOMAIN` → login page
+1. `https://YOUR-DOMAIN/health` → `{"status":"ok","redis":true,"worker":true}`
+   (`"status":"degraded"` with `"worker":false` for the first second or two after a deploy is normal — the worker is still initialising the Gemini client.)
+2. `https://YOUR-DOMAIN` → login page
 3. Sign in with the allowlisted Gmail
 4. Upload a PDF or JPG, click **Start**, watch progress
 5. When done, click **↓ Clean PDF** to download
@@ -185,7 +213,7 @@ Then `docker compose restart app` to apply.
 | Worker thread (Gemini client) | ~150 MB | ~400 MB (during page rasterization at 300 DPI) |
 | **Total** | **~1.55 GB** | **~1.8 GB** |
 
-Easily fits on the **$3/mo (4 GB)** Zeabur plan now that PaddleOCR/Surya are gone.
+Comfortably within Railway's default service size now that PaddleOCR/Surya are gone.
 
 ---
 
@@ -194,9 +222,11 @@ Easily fits on the **$3/mo (4 GB)** Zeabur plan now that PaddleOCR/Surya are gon
 ```
 ocr-pdf/
 ├── Dockerfile              # single-container build (API + Worker merged)
+├── railway.json            # Railway build/deploy config (Dockerfile, healthcheck, 1 replica)
 ├── docker-compose.yml      # local dev — single service, no Redis
 ├── requirements.txt        # merged deps for API + Worker
 ├── config.yaml
+├── settings.py             # env-driven paths + public URL (shared by API + Worker)
 ├── store.py                # Redis / fakeredis provider (shared by API + Worker)
 ├── .env.example
 ├── .dockerignore
@@ -221,8 +251,11 @@ ocr-pdf/
 
 ## Troubleshooting
 
+**Container exits at boot with `Missing required environment variable(s): …`:**
+Add the named variables in Railway → service → **Variables**. The deploy will restart on its own once you save.
+
 **Worker says `GEMINI_API_KEY environment variable is not set`:**
-You forgot to add `GEMINI_API_KEY` to Zeabur env variables, or the value is empty. Check Zeabur UI → Environment Variables.
+The variable is missing or empty. Check Railway → service → **Variables** (this one is read by the worker at job time, so the app boots fine without it and only fails when you start a conversion).
 
 **Job fails with `Daily Gemini quota reached`:**
 You've used all your free calls today. Wait until midnight Pacific Time (~UTC-7), or pause the job and resume tomorrow — cached pages will not be re-spent.
@@ -230,8 +263,11 @@ You've used all your free calls today. Wait until midnight Pacific Time (~UTC-7)
 **429 errors in worker logs:**
 The rate limiter should normally prevent this. If you see persistent 429s, your account might be on a more restrictive tier than the docs suggest — lower `rpm_limit` to 5 or 8 in `config.yaml`.
 
-**Google OAuth callback error:**
-Verify `BASE_URL` matches your Zeabur domain exactly (no trailing slash) and the redirect URI in Google Cloud Console is `BASE_URL + /auth/callback`.
+**Google OAuth callback error / `redirect_uri_mismatch`:**
+The redirect URI the app sends is `APP_BASE_URL + /auth/callback`, and it must match Google Cloud Console character for character. If `APP_BASE_URL` is unset, the app derives it from Railway's `RAILWAY_PUBLIC_DOMAIN` — so after attaching a custom domain, set `APP_BASE_URL` explicitly (no trailing slash) and register the matching redirect URI.
+
+**Downloads 404, or the job list empties after a deploy:**
+Expected without a volume — the filesystem is ephemeral and (without `REDIS_URL`) job state is in memory. See "Persisting uploads and outputs" in Step 4. The same symptom appears if the service is scaled past one replica; keep `numReplicas: 1`.
 
 ---
 
