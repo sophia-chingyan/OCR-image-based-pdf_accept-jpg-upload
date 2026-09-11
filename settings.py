@@ -35,6 +35,19 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+# Sample values from .env.example / past README revisions. If one of these
+# ends up in APP_BASE_URL or BASE_URL verbatim (typically from copy-pasting
+# the example file into a host's variables UI without editing it), the app
+# would silently send Google a redirect_uri that matches nothing registered
+# in Cloud Console — a redirect_uri_mismatch that only surfaces when someone
+# tries to sign in, not at boot. Treat it as a config error instead.
+_PLACEHOLDER_BASE_URLS = {
+    "https://your-app.up.railway.app",
+    "https://your-zeabur-domain.zeabur.app",
+    "https://your-zeabur-domain.com",
+}
+
+
 def public_base_url() -> str:
     """
     The origin the browser reaches this app on, without a trailing slash.
@@ -45,7 +58,16 @@ def public_base_url() -> str:
     """
     explicit = (os.environ.get("APP_BASE_URL") or os.environ.get("BASE_URL") or "").strip()
     if explicit:
-        return explicit.rstrip("/")
+        explicit = explicit.rstrip("/")
+        if explicit.lower() in _PLACEHOLDER_BASE_URLS:
+            raise RuntimeError(
+                f"APP_BASE_URL/BASE_URL is set to {explicit!r}, which is the "
+                "unedited placeholder from .env.example — not a real domain. "
+                "Either set it to this service's actual public URL, or delete "
+                "the variable entirely so it's auto-detected from Railway's "
+                "RAILWAY_PUBLIC_DOMAIN."
+            )
+        return explicit
 
     domain = (os.environ.get("RAILWAY_PUBLIC_DOMAIN") or "").strip()
     if domain:

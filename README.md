@@ -264,7 +264,11 @@ You've used all your free calls today. Wait until midnight Pacific Time (~UTC-7)
 The rate limiter should normally prevent this. If you see persistent 429s, your account might be on a more restrictive tier than the docs suggest — lower `rpm_limit` to 5 or 8 in `config.yaml`.
 
 **Google OAuth callback error / `redirect_uri_mismatch`:**
-The redirect URI the app sends is `APP_BASE_URL + /auth/callback`, and it must match Google Cloud Console character for character. If `APP_BASE_URL` is unset, the app derives it from Railway's `RAILWAY_PUBLIC_DOMAIN` — so after attaching a custom domain, set `APP_BASE_URL` explicitly (no trailing slash) and register the matching redirect URI.
+The redirect URI the app sends is `APP_BASE_URL + /auth/callback` (or `BASE_URL`, or the auto-detected `RAILWAY_PUBLIC_DOMAIN` if neither is set), and it must match a URI registered in Google Cloud Console character for character. To see exactly what the app is sending, request `/auth/login` without following redirects and read the `redirect_uri=` query parameter of the `Location` header it returns, e.g.:
+```bash
+curl -sI https://YOUR-DOMAIN/auth/login | grep -i ^location
+```
+Compare that value (URL-decoded) against Cloud Console's "Authorized redirect URIs" — a mismatch there is the entire bug. The most common cause is `APP_BASE_URL`/`BASE_URL` in Railway → Variables still holding the literal `.env.example` placeholder instead of a real domain — the app now refuses to boot if it detects that exact placeholder, but a similar near-miss typo won't be caught. If you don't need a custom domain, the simplest fix is to delete `APP_BASE_URL`/`BASE_URL` entirely and let Railway's `RAILWAY_PUBLIC_DOMAIN` drive it.
 
 **Downloads 404, or the job list empties after a deploy:**
 Expected without a volume — the filesystem is ephemeral and (without `REDIS_URL`) job state is in memory. See "Persisting uploads and outputs" in Step 4. The same symptom appears if the service is scaled past one replica; keep `numReplicas: 1`.
