@@ -3,7 +3,7 @@ Redis / in-memory store provider
 =================================
 If REDIS_URL is set, connects to a real Redis server.
 Otherwise, uses fakeredis (in-process), so no external service is needed
-for single-container deployments (e.g. Zeabur).
+for single-container deployments (e.g. Railway).
 
 Both the async API (FastAPI) and the sync Worker thread share the same
 underlying FakeServer instance, so all state (jobs, sessions, queues) is

@@ -35,23 +35,24 @@ from __future__ import annotations
 import os, sys, json, time, shutil, logging, traceback, gc
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Repo root, so `store` / `settings` resolve even when the process was not
+# started with PYTHONPATH pointing at it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml
 from store import get_sync_redis
+from settings import (
+    CONFIG_PATH, UPLOAD_DIR, OUTPUT_DIR, TMPWORK_DIR, ensure_dirs,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
 
-CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "/app/config.yaml"))
 with open(CONFIG_PATH) as f:
     CFG = yaml.safe_load(f)
 
-UPLOAD_DIR  = Path("/app/uploads")
-OUTPUT_DIR  = Path("/app/outputs")
-TMPWORK_DIR = Path("/app/tmp-work")
-for d in (UPLOAD_DIR, OUTPUT_DIR, TMPWORK_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+ensure_dirs()
 
 DPI        = CFG["ocr"]["dpi"]
 BATCH_SIZE = CFG["pipeline"]["page_batch_size"]

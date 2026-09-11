@@ -16,6 +16,8 @@ services:
       - APP_BASE_URL=${APP_BASE_URL}
       - BASE_URL=${BASE_URL}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Optional: relocate uploads/outputs/tmp-work under one directory
+      # - DATA_DIR=/app
       # Optional: set REDIS_URL to use an external Redis instead of in-process storage
       # - REDIS_URL=redis://your-redis-host:6379
     volumes:

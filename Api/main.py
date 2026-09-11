@@ -20,26 +20,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
 from store import get_async_redis
+from settings import (
+    CONFIG_PATH, UPLOAD_DIR, OUTPUT_DIR, TMPWORK_DIR,
+    ensure_dirs, public_base_url, require_env,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "/app/config.yaml"))
 with open(CONFIG_PATH) as f:
     CFG = yaml.safe_load(f)
 
 MAX_UPLOAD_BYTES = CFG["pipeline"]["max_pdf_size_mb"] * 1024 * 1024
 IMAGE_EXTENSIONS = (".jpg", ".jpeg")
-UPLOAD_DIR  = Path("/app/uploads")
-OUTPUT_DIR  = Path("/app/outputs")
-TMPWORK_DIR = Path("/app/tmp-work")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-TMPWORK_DIR.mkdir(parents=True, exist_ok=True)
+ensure_dirs()
+
+require_env("SECRET_KEY", "ALLOWED_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
 
 SECRET_KEY    = os.environ["SECRET_KEY"]
 ALLOWED_EMAIL = os.environ["ALLOWED_EMAIL"].strip().lower()
 
-BASE_URL = os.environ.get("APP_BASE_URL") or os.environ.get("BASE_URL", "http://localhost:8080")
-BASE_URL = BASE_URL.rstrip("/")
+BASE_URL = public_base_url()
 
 _HTTPS_ONLY = BASE_URL.startswith("https://")
 
@@ -167,7 +166,7 @@ async def require_auth(request: Request) -> str:
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @app.get("/auth/login")
 async def auth_login(request: Request):
-    redirect_uri = str(request.url_for("auth_callback"))
+    redirect_uri = f"{BASE_URL}/auth/callback"
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 @app.get("/auth/callback")
