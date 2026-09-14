@@ -177,7 +177,7 @@ The single output format is a clean, re-typeset PDF produced from one OCR pass.
 
 ### 7. OCR Engine: Google Gemini
 
-**Model:** `gemini-3.5-flash-lite` (configurable via `config.yaml`)
+**Model:** `gemini-3.5-flash-lite` — resolved from the `GEMINI_MODEL` environment variable if set, otherwise `ocr.model_name` in `config.yaml`, otherwise this default
 
 **Strategy:** One API call per PDF page. The call returns OCR text, layout classification, and text direction in a single structured JSON response — no separate layout analysis pass needed.
 
@@ -345,7 +345,7 @@ Upload (PDF saved, page count read, job record created)
 ```yaml
 ocr:
   engine: gemini
-  model_name: "gemini-3.5-flash-lite"  # change to gemini-3.5-flash for better accuracy
+  model_name: "gemini-3.5-flash-lite"  # overridden by the GEMINI_MODEL env var when set
   rpm_limit: 15                         # match your Gemini tier
   rpd_limit: 1000
   max_retries: 3
@@ -398,6 +398,7 @@ Set in Zeabur UI (never in code):
 | `SECRET_KEY` | ✅ | Cookie signing key (`openssl rand -hex 32`) |
 | `GEMINI_API_KEY` | ✅ | Gemini API key from AI Studio |
 | `APP_BASE_URL` or `BASE_URL` | ✅ | Public domain (`https://your-domain.zeabur.app`) |
+| `GEMINI_MODEL` | ☐ | OCR model override (e.g. `gemini-3.5-flash`) — takes precedence over `ocr.model_name` |
 | `REDIS_URL` | ☐ | External Redis URL — omit to use in-process fakeredis |
 
 ---

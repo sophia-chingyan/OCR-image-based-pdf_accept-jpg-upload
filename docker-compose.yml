@@ -16,6 +16,8 @@ services:
       - APP_BASE_URL=${APP_BASE_URL}
       - BASE_URL=${BASE_URL}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Optional: override ocr.model_name from config.yaml
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
       # Optional: relocate uploads/outputs/tmp-work under one directory
       # - DATA_DIR=/app
       # Optional: set REDIS_URL to use an external Redis instead of in-process storage

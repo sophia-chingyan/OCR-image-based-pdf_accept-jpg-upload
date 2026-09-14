@@ -74,3 +74,27 @@ def require_env(*names: str) -> None:
             + ". Set them in your host's variables UI (Railway: service → "
               "Variables) or in your local .env — see .env.example."
         )
+
+
+# Default when neither the environment nor config.yaml names a model.
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
+def gemini_model(config_value: str | None = None) -> str:
+    """
+    Which Gemini model to use for OCR.
+
+    Resolution order, most specific first:
+
+    1. `GEMINI_MODEL` environment variable — lets the model be swapped from the
+       host's variables UI (Railway: service → Variables) without a code change
+       or a redeploy of config.yaml,
+    2. `ocr.model_name` in config.yaml (passed in as `config_value`),
+    3. DEFAULT_GEMINI_MODEL.
+    """
+    env_value = (os.environ.get("GEMINI_MODEL") or "").strip()
+    if env_value:
+        return env_value
+
+    cfg_value = (config_value or "").strip() if isinstance(config_value, str) else ""
+    return cfg_value or DEFAULT_GEMINI_MODEL
