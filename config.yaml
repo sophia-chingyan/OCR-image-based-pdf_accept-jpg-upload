@@ -1,5 +1,7 @@
 ocr:
   engine: gemini
+  # Overridden by the GEMINI_MODEL environment variable when that is set,
+  # so the model can be switched from the host's Variables UI.
   model_name: "gemini-3.5-flash-lite"
   rpm_limit: 2000
   rpd_limit: 10000

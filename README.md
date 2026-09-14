@@ -3,7 +3,7 @@
 Self-hosted, single-user web app that converts **image-based PDF files and JPG images** to clean, re-typeset PDF files using **Google Gemini** for OCR.
 
 - ✅ Upload **PDF or JPG/JPEG** files — a JPG is auto-wrapped into a one-page PDF and OCR'd the same way
-- ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default)
+- ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default, switchable with the `GEMINI_MODEL` variable)
 - ✅ Languages: Traditional Chinese, Simplified Chinese, Japanese, Korean, English (and 100+ others)
 - ✅ Auto-detects horizontal / vertical text layout per page
 - ✅ Clean PDF with correct CJK font/CMap per detected language
@@ -98,6 +98,7 @@ If any of these is missing the container exits at boot with a message naming exa
 | Variable | Value |
 |---|---|
 | `APP_BASE_URL` / `BASE_URL` | Public origin, no trailing slash. **On Railway you can omit this** — the app falls back to `RAILWAY_PUBLIC_DOMAIN`. Set it explicitly once you attach a custom domain. |
+| `GEMINI_MODEL` | Gemini model to OCR with, e.g. `gemini-3.5-flash`. Overrides `ocr.model_name` in `config.yaml`. Leave unset to use the config default (`gemini-3.5-flash-lite`). |
 | `DATA_DIR` | Parent of `uploads/`, `outputs/`, `tmp-work/`. Set to a volume mount path (e.g. `/data`) to survive redeploys — see Step 4. |
 | `REDIS_URL` | External Redis. On Railway: add a Redis database to the project and set this to `${{Redis.REDIS_URL}}`. |
 | `PORT` | Injected by Railway automatically. Do not set it. |
@@ -158,7 +159,7 @@ docker compose logs -f
 ```yaml
 ocr:
   engine: gemini
-  model_name: "gemini-3.5-flash-lite"   # default; change to gemini-3.5-flash for higher accuracy
+  model_name: "gemini-3.5-flash-lite"   # default; overridden by the GEMINI_MODEL env var when set
   rpm_limit: 2000                        # paid plan; lower to your free-tier RPM
   rpd_limit: 10000                       # paid plan; lower to your free-tier RPD
   max_retries: 5
@@ -191,7 +192,26 @@ ocr:
   rpd_limit: 1500
 ```
 
-### Switching to `gemini-3.5-flash` (higher accuracy)
+### Switching the model (e.g. to `gemini-3.5-flash` for higher accuracy)
+
+The model is resolved in this order, most specific first:
+
+1. the **`GEMINI_MODEL`** environment variable,
+2. `ocr.model_name` in `config.yaml`,
+3. the built-in default `gemini-3.5-flash-lite`.
+
+**Preferred on Railway — no code change, no commit:** service → **Variables** →
+**New Variable**, `GEMINI_MODEL` = `gemini-3.5-flash`. Railway redeploys the
+service and the worker picks the new model up on the next job. Delete the
+variable to fall back to `config.yaml`.
+
+Confirm which model a running deploy is using with `GET /health`:
+
+```json
+{ "status": "ok", "redis": true, "worker": true, "gemini_model": "gemini-3.5-flash" }
+```
+
+**Or in `config.yaml`** (for local / committed defaults):
 
 ```yaml
 ocr:
@@ -200,7 +220,11 @@ ocr:
   rpd_limit: 10000   # paid plan; lower to your free-tier RPD
 ```
 
-Then `docker compose restart app` to apply.
+Then `docker compose restart app` to apply. Locally you can also set
+`GEMINI_MODEL=gemini-3.5-flash` in `.env` — `docker-compose.yml` passes it through.
+
+Note that the rate limits stay in `config.yaml`: a model switch does not change
+`rpm_limit` / `rpd_limit`, so lower them there if the new model's quota is tighter.
 
 ---
 
