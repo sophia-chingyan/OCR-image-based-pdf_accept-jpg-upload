@@ -198,6 +198,11 @@ def run_pipeline(r, job: dict, engine) -> None:
     language_hints = job.get("language_hints") or []
     engine.set_language_hints(language_hints)
     engine.reset_page_cache()
+    # Pick up any POE_API_KEY / POE_MODEL saved via the Settings page since
+    # this engine was loaded. Not part of the OCREngine ABC (only PoeOCREngine
+    # implements it), hence the hasattr guard.
+    if hasattr(engine, "refresh_runtime_settings"):
+        engine.refresh_runtime_settings(r)
 
     ingested = None
 
@@ -476,23 +481,66 @@ def cleanup_expired_files(r):
                 pass
 
 
+# OCR engine instances, keyed by engine name, created + loaded lazily on
+# first use and cached for the worker thread's lifetime so each engine's
+# internal state (rate limiter, Gemini's daily-quota counter, Poe's page
+# cache) persists across jobs — same as the single module-level engine used
+# to, just now there can be one entry per engine name instead of exactly one.
+# Only ever touched from this single worker thread, so no locking needed
+# (max_concurrent_jobs: 1 / numReplicas: 1 — see README).
+_ENGINE_CACHE: dict = {}
+
+
+def _resolve_engine_name(r) -> str:
+    """
+    Which OCR engine this job should use: the Settings page's choice
+    (settings:ocr_engine in Redis) if one is saved, else ocr.engine in
+    config.yaml. Falls back to the config.yaml default on any Redis error
+    or an unrecognised saved value, so a stale/bad setting can't wedge the
+    worker.
+    """
+    from engine_factory import ENGINES
+    try:
+        saved = (r.get("settings:ocr_engine") or "").strip().lower()
+    except Exception as e:
+        logger.warning(f"Could not read settings:ocr_engine from Redis: {e}")
+        saved = ""
+    if saved in ENGINES:
+        return saved
+    return CFG["ocr"].get("engine", "gemini").lower()
+
+
+def _get_or_load_engine(name: str):
+    """
+    Return a loaded engine for `name`, building + loading it on first use.
+    Propagates whatever engine.load() raises — the caller treats that as
+    this JOB failing, not a reason to stop the worker loop, since switching
+    the Settings-page engine choice (or fixing the other engine's
+    credentials) may make the next job succeed.
+    """
+    if name in _ENGINE_CACHE:
+        return _ENGINE_CACHE[name]
+    from engine_factory import get_engine
+    cfg = dict(CFG["ocr"])
+    cfg["engine"] = name
+    engine = get_engine(cfg)
+    engine.load()
+    _ENGINE_CACHE[name] = engine
+    return engine
+
+
 def main():
     logger.info("Worker starting…")
-    from engine_factory import get_engine
-    engine = get_engine(CFG["ocr"])
 
+    # Which OCR engine to use is now resolved per job (Settings page, or
+    # config.yaml as the fallback default) rather than fixed at startup, so
+    # there's nothing engine-specific left to validate before the loop
+    # starts — a bad/missing credential for one engine no longer prevents
+    # the worker thread (or the OTHER engine) from running at all.
     global _worker_healthy, _worker_error
-    try:
-        engine.load()
-    except Exception as exc:
-        _worker_healthy = False
-        _worker_error = str(exc)
-        logger.error(f"Worker failed to start: {exc}")
-        return
-
     _worker_healthy = True
     _worker_error = ""
-    logger.info("OCR engine ready.")
+    logger.info("Worker ready.")
 
     r = get_sync_redis()
     last_cleanup = time.time()
@@ -520,7 +568,17 @@ def main():
                 continue
             if job.get("status") != "queued":
                 continue
-            logger.info(f"Processing {job_id}: {job.get('filename')}")
+
+            engine_name = _resolve_engine_name(r)
+            try:
+                engine = _get_or_load_engine(engine_name)
+            except Exception as exc:
+                logger.error(f"Job {job_id}: OCR engine '{engine_name}' failed to initialise: {exc}")
+                update_job(r, job_id, status="failed", message="Conversion failed.",
+                           error=f"OCR engine '{engine_name}' is not ready: {exc}")
+                continue
+
+            logger.info(f"Processing {job_id}: {job.get('filename')} (engine={engine_name})")
             update_job(r, job_id, status="processing", message="Starting…", progress=1)
             run_pipeline(r, job, engine)
         except Exception as exc:

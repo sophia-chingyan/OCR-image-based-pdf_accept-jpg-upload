@@ -3,13 +3,17 @@ Engine Factory
 ==============
 Returns the configured OCR engine instance.
 
-Currently supported engines: gemini (default), poe.
+Currently supported engines: gemini (default), poe. Which one actually
+runs a given job is resolved per job by Worker/worker.py — from the
+Settings page (settings:ocr_engine in Redis) if set, else ocr.engine in
+config.yaml — not fixed once at worker startup. See
+PoeOCREngine/GeminiOCREngine docstrings for per-engine credential handling.
 
 To add a new engine in the future:
 1. Implement OCREngine in a new file (e.g. claude_vision_engine.py)
 2. Add a loader function below
 3. Register it in the ENGINES dict
-4. Set ocr.engine in config.yaml
+4. Set ocr.engine in config.yaml (or select it on the Settings page)
 """
 
 from __future__ import annotations
@@ -17,30 +21,6 @@ import logging
 from ocr_engine import OCREngine
 
 logger = logging.getLogger(__name__)
-
-
-def get_engine(config: dict) -> OCREngine:
-    """
-    Instantiate and return the OCR engine specified in config.yaml.
-
-    config: the full 'ocr' section of config.yaml
-    """
-    engine_name = config.get("engine", "gemini").lower()
-
-    ENGINES = {
-        "gemini": _load_gemini,
-        "poe":    _load_poe,
-    }
-
-    factory = ENGINES.get(engine_name)
-    if factory is None:
-        raise ValueError(
-            f"Unknown OCR engine: '{engine_name}'. "
-            f"Valid options: {list(ENGINES.keys())}"
-        )
-
-    logger.info(f"Initialising OCR engine: {engine_name}")
-    return factory(config)
 
 
 def _load_gemini(config: dict) -> OCREngine:
@@ -51,3 +31,34 @@ def _load_gemini(config: dict) -> OCREngine:
 def _load_poe(config: dict) -> OCREngine:
     from poe_engine import PoeOCREngine
     return PoeOCREngine(config)
+
+
+# Exposed at module level (not just inside get_engine) so callers — e.g.
+# worker.py resolving the Settings-page engine choice, or Api/main.py
+# validating a POST body — can enumerate valid engine names without
+# duplicating this list.
+ENGINES = {
+    "gemini": _load_gemini,
+    "poe":    _load_poe,
+}
+
+
+def get_engine(config: dict) -> OCREngine:
+    """
+    Instantiate and return the OCR engine named by config["engine"].
+
+    config: the full 'ocr' section of config.yaml, with "engine" already
+    resolved to whichever name should actually be used for this call (the
+    caller — worker.py — decides that; this function just builds it).
+    """
+    engine_name = config.get("engine", "gemini").lower()
+
+    factory = ENGINES.get(engine_name)
+    if factory is None:
+        raise ValueError(
+            f"Unknown OCR engine: '{engine_name}'. "
+            f"Valid options: {list(ENGINES.keys())}"
+        )
+
+    logger.info(f"Initialising OCR engine: {engine_name}")
+    return factory(config)

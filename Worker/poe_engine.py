@@ -18,8 +18,18 @@ Poe has no platform-wide default model — every request must name a bot,
 and which bots you can call depends on your account. Set the POE_MODEL
 environment variable (or ocr.poe_model_name in config.yaml) to a
 vision-capable bot name from your Poe account, e.g. "Claude-Sonnet-4.5" or
-"GPT-5" — confirm the exact name at https://poe.com first. load() fails
-fast with an actionable error if neither is set, rather than guessing.
+"GPT-5" — confirm the exact name at https://poe.com first.
+
+User-provided credentials (Settings page):
+The app also lets the logged-in user enter their own POE_API_KEY / bot
+name at runtime via the Settings page (Api/static/settings.html →
+POST /api/settings), stored in Redis under "settings:poe_api_key" /
+"settings:poe_model". worker.py calls refresh_runtime_settings() once per
+job, which re-resolves self.api_key / self.model_name from Redis if
+present, else falls back to the environment/config.yaml value this engine
+was constructed with. Because credentials may only be supplied AFTER the
+worker thread has already started, load() does NOT fail if they are
+missing — only the first actual OCR call does, with an actionable error.
 
 Rate-limiting:
 Poe's external API enforces a flat 500 requests/minute ceiling per account
@@ -236,11 +246,15 @@ class PoeOCREngine(OCREngine):
 
     def __init__(self, config: dict):
         self.config      = config
-        # POE_MODEL (env) wins over ocr.poe_model_name (config.yaml) so the
-        # bot can be switched from the host's variables UI without a code
-        # change. Resolves to "" if neither is set — load() then fails fast.
-        self.model_name  = poe_model(config.get("poe_model_name"))
-        self.api_key     = os.environ.get("POE_API_KEY", "").strip()
+        # POE_MODEL (env) wins over ocr.poe_model_name (config.yaml). These
+        # are the fallback defaults used when the Settings page hasn't
+        # stored a user-provided value in Redis (see refresh_runtime_settings).
+        # Resolve to "" if neither is set — the first OCR call then fails
+        # fast with an actionable error rather than guessing a bot name.
+        self._default_model   = poe_model(config.get("poe_model_name"))
+        self._default_api_key = os.environ.get("POE_API_KEY", "").strip()
+        self.model_name  = self._default_model
+        self.api_key     = self._default_api_key
         self.max_retries = int(config.get("max_retries", 8))
         self.timeout_s   = int(config.get("request_timeout_s", 180))
 
@@ -264,26 +278,45 @@ class PoeOCREngine(OCREngine):
         self._language_hints: List[str] = []
 
     def load(self) -> None:
-        if not self.api_key:
-            raise RuntimeError(
-                "POE_API_KEY environment variable is not set. "
-                "Get a key at https://poe.com/api_key and add it to your "
-                "host's environment variables (Railway: service → Variables)."
-            )
-        if not self.model_name:
-            raise RuntimeError(
-                "No Poe bot configured for OCR. Set the POE_MODEL environment "
-                "variable (or ocr.poe_model_name in config.yaml) to a "
-                "vision-capable bot name from your Poe account — e.g. "
-                "'Claude-Sonnet-4.5' or 'GPT-5' are examples only; confirm "
-                "the exact name at https://poe.com, since availability "
-                "depends on your account."
+        # Unlike GeminiOCREngine, this does NOT require credentials up front:
+        # the user may supply POE_API_KEY / POE_MODEL later via the app's
+        # Settings page (stored in Redis, applied by refresh_runtime_settings
+        # at the start of each job) rather than at worker-boot time. Failing
+        # here would permanently kill the worker thread before the user ever
+        # gets a chance to configure anything through the UI. The first
+        # actual OCR call raises a clear, actionable error instead if
+        # neither source has provided credentials by then.
+        if not self.api_key or not self.model_name:
+            logger.warning(
+                "Poe engine loaded without POE_API_KEY/POE_MODEL configured. "
+                "Set them on the app's Settings page, or via POE_API_KEY / "
+                "POE_MODEL environment variables, before starting a job."
             )
         import httpx
-        logger.info(f"Initialising Poe client (model={self.model_name}, rpm={self.rpm_limit})…")
+        logger.info(f"Initialising Poe client (model={self.model_name or '(not set)'}, rpm={self.rpm_limit})…")
         self._client = httpx.Client(base_url=POE_API_BASE, timeout=self.timeout_s)
         self._loaded = True
         logger.info("Poe client ready.")
+
+    def refresh_runtime_settings(self, r) -> None:
+        """
+        Re-resolve api_key / model_name from Redis (settings:poe_api_key /
+        settings:poe_model), which the Settings page writes via
+        POST /api/settings. A value stored there takes priority over the
+        POE_API_KEY / POE_MODEL environment variable (or ocr.poe_model_name
+        in config.yaml) this engine was constructed with; if Redis has
+        nothing stored (or the user cleared it), that original default is
+        used instead. Called once per job by worker.py — not part of the
+        OCREngine ABC, so callers should use hasattr() before calling it.
+        """
+        try:
+            redis_key   = (r.get("settings:poe_api_key") or "").strip()
+            redis_model = (r.get("settings:poe_model") or "").strip()
+        except Exception as e:
+            logger.warning(f"Could not read Poe settings from Redis: {e}")
+            return
+        self.api_key    = redis_key or self._default_api_key
+        self.model_name = redis_model or self._default_model
 
     # ── OCREngine interface ──────────────────────────────────────────────────
 
@@ -498,6 +531,13 @@ class PoeOCREngine(OCREngine):
 
     def _call_poe_with_retry(self, jpeg_bytes: bytes) -> dict:
         import httpx
+
+        if not self.api_key or not self.model_name:
+            raise RuntimeError(
+                "Poe OCR is not configured — set your Poe API key and bot/model "
+                "name on the app's Settings page (or the POE_API_KEY / POE_MODEL "
+                "environment variables) before starting a job."
+            )
 
         RETRYABLE_CODES = {408, 429, 500, 502, 503, 504}
         max_attempts = self.max_retries
