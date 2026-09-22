@@ -22,7 +22,7 @@ from authlib.integrations.starlette_client import OAuth
 from store import get_async_redis
 from settings import (
     CONFIG_PATH, UPLOAD_DIR, OUTPUT_DIR, TMPWORK_DIR,
-    ensure_dirs, public_base_url, require_env, gemini_model,
+    ensure_dirs, public_base_url, require_env, gemini_model, poe_model,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -30,7 +30,9 @@ with open(CONFIG_PATH) as f:
     CFG = yaml.safe_load(f)
 
 MAX_UPLOAD_BYTES = CFG["pipeline"]["max_pdf_size_mb"] * 1024 * 1024
+OCR_ENGINE = CFG["ocr"].get("engine", "gemini").lower()
 GEMINI_MODEL = gemini_model(CFG["ocr"].get("model_name"))
+POE_MODEL = poe_model(CFG["ocr"].get("poe_model_name"))
 IMAGE_EXTENSIONS = (".jpg", ".jpeg")
 ensure_dirs()
 
@@ -650,9 +652,12 @@ async def health():
         "redis": redis_ok,
         "worker": worker_ok,
         "worker_error": worker_err if not worker_ok else "",
-        # Which Gemini model this deploy is actually using, so a GEMINI_MODEL
-        # change can be confirmed without reading the logs.
+        "ocr_engine": OCR_ENGINE,
+        # Which model/bot this deploy is actually using for OCR, so a
+        # GEMINI_MODEL / POE_MODEL change can be confirmed without reading
+        # the logs. Only the field matching ocr_engine is actually in use.
         "gemini_model": GEMINI_MODEL,
+        "poe_model": POE_MODEL,
     }
 
 @app.get("/api/config")
