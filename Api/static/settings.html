@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Settings — OCR for Imaged PDF</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+    :root{
+      --bg:#f7f5f2;
+      --surface:#ffffff;
+      --surface-2:#f0ede8;
+      --border:#e2ddd7;
+      --text:#1c1917;
+      --text-muted:#78716c;
+      --accent:#c2410c;
+      --accent-hover:#9a3412;
+      --accent-soft:#fff1ec;
+      --green:#15803d;
+      --green-soft:#f0fdf4;
+      --amber:#c07000;
+      --red:#dc2626;
+      --red-soft:#fef2f2;
+      --shadow-sm:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+      --shadow-md:0 4px 12px rgba(0,0,0,.08),0 2px 4px rgba(0,0,0,.04);
+      --radius:10px;
+    }
+
+    body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+    /* ── Header ── */
+    .site-header{
+      background:#1c1917;border-bottom:1px solid #292524;padding:0 2rem;height:56px;
+      display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;
+    }
+    .site-header .brand{display:flex;align-items:center;gap:.55rem;text-decoration:none}
+    .brand-mark{font-family:'Lora',serif;font-size:1.5rem;color:#fb923c;line-height:1}
+    .brand-name{font-family:'Lora',serif;font-size:1.05rem;color:#fff;letter-spacing:-.01em}
+    .brand-name span{color:#fb923c}
+    .header-nav{display:flex;align-items:center;gap:.25rem}
+    .nav-link{
+      display:inline-flex;align-items:center;gap:.35rem;padding:.4rem .85rem;border-radius:6px;
+      font-size:.875rem;font-weight:500;color:#a8a29e;text-decoration:none;transition:color .15s,background .15s;
+    }
+    .nav-link:hover{color:#fff;background:rgba(255,255,255,.08)}
+    .nav-link.active{color:#fff;background:rgba(255,255,255,.12)}
+
+    .page-wrap{max-width:640px;margin:0 auto;padding:2.5rem 1.5rem 4rem}
+
+    .page-header{margin-bottom:1.75rem}
+    .page-header h1{font-family:'Lora',serif;font-size:1.9rem;font-weight:600;letter-spacing:-.02em}
+    .page-header .subtitle{color:var(--text-muted);font-size:.9rem;margin-top:.25rem}
+
+    /* ── Buttons ── */
+    .btn{
+      display:inline-flex;align-items:center;gap:.4rem;padding:.5rem 1.1rem;border-radius:7px;
+      font-size:.875rem;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;border:none;
+      transition:all .15s;text-decoration:none;white-space:nowrap;
+    }
+    .btn-primary{background:var(--accent);color:#fff}
+    .btn-primary:hover{background:var(--accent-hover);color:#fff}
+    .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
+    .btn-ghost:hover{background:var(--surface-2);color:var(--text)}
+    .btn-sm{padding:.35rem .75rem;font-size:.8rem}
+
+    .section-label{
+      font-family:'DM Sans',sans-serif;font-size:.7rem;font-weight:600;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--text-muted);margin-bottom:1rem;display:flex;align-items:center;gap:.75rem;
+    }
+    .section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+    /* ── Form card ── */
+    .settings-card{
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      padding:1.5rem;box-shadow:var(--shadow-sm);
+    }
+    .field-label{display:block;font-size:.78rem;font-weight:600;color:var(--text);margin-bottom:.4rem}
+    .text-input{
+      width:100%;padding:.6rem .8rem;border:1px solid var(--border);border-radius:7px;
+      font-family:'DM Sans',sans-serif;font-size:.9rem;color:var(--text);background:var(--surface);
+      transition:border-color .15s;
+    }
+    .text-input:focus{outline:none;border-color:var(--accent)}
+    .text-input::placeholder{color:#a8a29e}
+    .field-hint{font-size:.76rem;color:var(--text-muted);margin-top:.4rem;line-height:1.45}
+    .field-block+.field-block{margin-top:1.1rem}
+
+    .info-msg,.warn-msg{
+      font-size:.82rem;padding:.65rem .9rem;border-radius:6px;margin-bottom:1.25rem;line-height:1.5;
+    }
+    .info-msg{color:var(--green);background:var(--green-soft);border-left:3px solid var(--green)}
+    .warn-msg{color:var(--amber);background:#fffbeb;border-left:3px solid var(--amber)}
+    .warn-msg code,.field-hint code{background:rgba(0,0,0,.06);padding:.1rem .35rem;border-radius:4px;font-size:.85em}
+
+    .form-actions{margin-top:1.4rem;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap}
+
+    /* ── Toast ── */
+    .toast{
+      position:fixed;bottom:1.5rem;right:1.5rem;background:#1c1917;color:#fff;padding:.75rem 1.15rem;
+      border-radius:8px;font-size:.85rem;font-weight:500;box-shadow:var(--shadow-md);
+      opacity:0;transform:translateY(10px);transition:opacity .3s,transform .3s;z-index:9999;pointer-events:none;
+    }
+    .toast.show{opacity:1;transform:translateY(0)}
+
+    @media (max-width:640px){
+      .site-header{padding:0 1rem}
+      .page-wrap{padding:1.5rem 1rem 3rem}
+      .nav-link span.label{display:none}
+    }
+  </style>
+</head>
+<body>
+
+  <header class="site-header">
+    <a href="/" class="brand">
+      <span class="brand-mark">文</span>
+      <span class="brand-name">OCR<span>·</span>PDF</span>
+    </a>
+    <nav class="header-nav">
+      <a href="/" class="nav-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        <span class="label">Convert</span>
+      </a>
+      <a href="/library" class="nav-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span class="label">Library</span>
+      </a>
+      <a href="/settings" class="nav-link active">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span class="label">Settings</span>
+      </a>
+      <a href="/auth/logout" class="nav-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span class="label">Logout</span>
+      </a>
+    </nav>
+  </header>
+
+  <div class="page-wrap">
+    <div class="page-header">
+      <h1>Settings</h1>
+      <div class="subtitle">Your Poe API credentials for OCR — saved here instead of the server's environment variables.</div>
+    </div>
+
+    <div id="engine-banner"></div>
+
+    <div class="settings-card">
+      <div class="section-label">Poe API</div>
+      <form id="settings-form">
+        <div class="field-block">
+          <label class="field-label" for="poe-model">Bot / model name</label>
+          <input type="text" id="poe-model" class="text-input" placeholder="e.g. Claude-Sonnet-4.5" autocomplete="off"/>
+          <div class="field-hint">A vision-capable bot from your own Poe account. Poe has no default model — confirm the exact name at <a href="https://poe.com" target="_blank" rel="noopener">poe.com</a> before saving.</div>
+        </div>
+        <div class="field-block">
+          <label class="field-label" for="poe-api-key">API key</label>
+          <input type="password" id="poe-api-key" class="text-input" placeholder="Enter your Poe API key" autocomplete="off"/>
+          <div class="field-hint" id="key-hint"></div>
+          <button type="button" id="clear-key-btn" class="btn btn-ghost btn-sm" style="margin-top:.6rem;display:none">Remove saved key</button>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Save</button>
+          <a href="https://poe.com/api_key" target="_blank" rel="noopener" class="btn btn-ghost">Get a Poe API key ↗</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const form = $('settings-form'), modelInput = $('poe-model'), keyInput = $('poe-api-key'),
+  keyHint = $('key-hint'), clearBtn = $('clear-key-btn'), engineBanner = $('engine-banner'),
+  toast = $('toast');
+
+function showToast(m, d = 3000) { toast.textContent = m; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), d); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+let _redirectingToLogin = false;
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (res.status === 401 && !_redirectingToLogin) {
+    _redirectingToLogin = true;
+    showToast('Session expired — redirecting to sign in…');
+    setTimeout(() => { window.location.href = '/'; }, 800);
+  }
+  return res;
+}
+
+function renderSettings(s) {
+  modelInput.value = s.poe_model || '';
+  modelInput.placeholder = s.poe_model_env_default
+    ? `Default from server environment: ${s.poe_model_env_default}`
+    : 'e.g. Claude-Sonnet-4.5';
+
+  keyInput.value = '';
+  keyHint.innerHTML = s.poe_api_key_set
+    ? `Saved key ending in <code>${esc(s.poe_api_key_preview)}</code> — leave blank to keep it, or type a new key to replace it.`
+    : 'No key saved yet — get one at <a href="https://poe.com/api_key" target="_blank" rel="noopener">poe.com/api_key</a>.';
+  clearBtn.style.display = s.poe_api_key_set ? 'inline-flex' : 'none';
+
+  engineBanner.innerHTML = s.ocr_engine === 'poe'
+    ? `<div class="info-msg">✓ The Poe engine is currently active for OCR — these settings are in effect.</div>`
+    : `<div class="warn-msg">⚠ The server's active OCR engine is <strong>${esc(s.ocr_engine)}</strong>, not Poe. These settings are saved, but won't be used until the server's <code>config.yaml</code> sets <code>ocr.engine: poe</code>.</div>`;
+}
+
+async function loadSettings() {
+  try {
+    const res = await api('/api/settings');
+    if (!res.ok) return;
+    renderSettings(await res.json());
+  } catch (_) {}
+}
+
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  const payload = { poe_model: modelInput.value.trim() };
+  if (keyInput.value.trim()) payload.poe_api_key = keyInput.value.trim();
+  try {
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('Save failed.');
+    renderSettings(await res.json());
+    showToast('Settings saved.');
+  } catch (e) { showToast(e.message); }
+});
+
+clearBtn.addEventListener('click', async () => {
+  if (!confirm('Remove your saved Poe API key? OCR will fall back to the server\'s POE_API_KEY environment variable, if any.')) return;
+  try {
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ poe_api_key: '' }),
+    });
+    if (!res.ok) throw new Error('Failed to remove key.');
+    renderSettings(await res.json());
+    showToast('API key removed.');
+  } catch (e) { showToast(e.message); }
+});
+
+loadSettings();
+</script>
+</body>
+</html>

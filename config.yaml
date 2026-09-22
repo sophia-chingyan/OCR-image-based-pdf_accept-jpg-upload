@@ -4,11 +4,13 @@ ocr:
   # Overridden by the GEMINI_MODEL environment variable when that is set,
   # so the model can be switched from the host's Variables UI.
   model_name: "gemini-3.5-flash-lite"
-  # Poe bot name, only used when engine: poe. No default exists — Poe has no
-  # platform-wide default model, so this (or the POE_MODEL env var, which
-  # wins if set) MUST name a vision-capable bot available in your Poe
-  # account, e.g. "Claude-Sonnet-4.5". Confirm the exact name at
-  # https://poe.com before deploying.
+  # Poe bot name, only used when engine: poe, and only as the fallback
+  # default when the app's Settings page (sign in → Settings) has no value
+  # saved — that page and the POE_MODEL env var both take priority over
+  # this key. Poe has no platform-wide default model, so *some* source
+  # (Settings page, POE_MODEL, or this key) must name a vision-capable bot
+  # available in your Poe account, e.g. "Claude-Sonnet-4.5" — confirm the
+  # exact name at https://poe.com.
   # poe_model_name: "Claude-Sonnet-4.5"
   rpm_limit: 2000                # gemini paid-tier default; poe clamps this to its 500/min ceiling regardless
   rpd_limit: 10000                       # paid plan; lower to your free-tier RPD

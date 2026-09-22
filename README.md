@@ -232,25 +232,58 @@ If you'd rather draw on an existing [Poe](https://poe.com) subscription/points
 balance than a separate Google AI Studio key, set `ocr.engine: poe` in
 `config.yaml`. The Poe engine (`Worker/poe_engine.py`) sends the same OCR
 prompt to a vision-capable bot on Poe (Claude, GPT, Gemini, etc.) via Poe's
-OpenAI-compatible API instead of calling Gemini directly.
+OpenAI-compatible API instead of calling Gemini directly. This is a
+deploy-time switch — it decides which engine *can* run — separate from the
+credentials below, which decide *which Poe account* it runs as.
 
-1. Get an API key at [poe.com/api_key](https://poe.com/api_key) and set
-   `POE_API_KEY`.
-2. Set `POE_MODEL` to a vision-capable bot name **from your own Poe
-   account** — e.g. `Claude-Sonnet-4.5`. Poe has no platform-wide default
-   model (unlike Gemini), so this is required; confirm the exact bot name
-   at poe.com rather than assuming the example above is current. You can
-   also set this via `ocr.poe_model_name` in `config.yaml` instead of the
-   env var.
-3. Set `ocr.engine: poe` in `config.yaml`.
+1. Set `ocr.engine: poe` in `config.yaml` and deploy.
+2. Sign in to the running app and open **Settings** (nav bar) to enter your
+   Poe API key and bot/model name — see below. No redeploy needed for this
+   part, and no `POE_API_KEY` / `POE_MODEL` environment variable either,
+   though you can still use those instead if you'd rather manage it like
+   `GEMINI_API_KEY` (see "Environment-variable alternative" below).
 
 ```yaml
 ocr:
   engine: poe
-  poe_model_name: "Claude-Sonnet-4.5"   # or set POE_MODEL instead
 ```
 
-Things that work differently from the Gemini engine:
+#### Entering your Poe credentials (Settings page)
+
+Once `ocr.engine: poe` is deployed, sign in and go to **Settings**:
+
+- **Bot / model name** — a vision-capable bot **from your own Poe
+  account**, e.g. `Claude-Sonnet-4.5`. Poe has no platform-wide default
+  model (unlike Gemini), so this is required; confirm the exact bot name at
+  [poe.com](https://poe.com) rather than assuming the example above is
+  current.
+- **API key** — from [poe.com/api_key](https://poe.com/api_key).
+
+Saved values are picked up by the worker at the start of the **next** job
+(no restart needed) and take priority over `POE_API_KEY`/`POE_MODEL` if
+both are set. They're stored in Redis (`settings:poe_api_key` /
+`settings:poe_model`) shared between the API and worker — **without
+`REDIS_URL`** (the default), that's the in-process fakeredis store, so
+saved credentials are lost on every restart/redeploy just like job history;
+set `REDIS_URL` to a real Redis if you want them to persist (see
+"Persisting uploads and outputs" above; a Redis add-on serves the same
+purpose here as the volume does for files).
+
+#### Environment-variable alternative
+
+You can set `POE_API_KEY` / `POE_MODEL` as environment variables instead
+(or as a fallback default the Settings page falls back to when its own
+fields are left blank) — same idea as `GEMINI_API_KEY` / `GEMINI_MODEL`:
+
+| Variable | Value |
+|---|---|
+| `POE_API_KEY` | API key from [poe.com/api_key](https://poe.com/api_key) |
+| `POE_MODEL` | Bot name from your Poe account, e.g. `Claude-Sonnet-4.5` |
+
+`POE_MODEL` can also be set via `ocr.poe_model_name` in `config.yaml`
+instead of the env var.
+
+#### Things that work differently from the Gemini engine
 
 - **Cost:** Poe isn't free the way Gemini's free tier is — calls draw down
   your Poe subscription's monthly points (or purchased add-on points), not
@@ -264,7 +297,7 @@ Things that work differently from the Gemini engine:
   sparse-text pages that come back with zero blocks are not retried as
   tiled quadrants — they're treated as image-only.
 - Confirm which engine/model a running deploy is using with `GET /health`
-  (`ocr_engine`, `gemini_model`, `poe_model`).
+  (`ocr_engine`, `gemini_model`, `poe_model`) or the Settings page itself.
 
 ---
 
@@ -322,8 +355,8 @@ Add the named variables in Railway → service → **Variables**. The deploy wil
 **Worker says `GEMINI_API_KEY environment variable is not set`:**
 The variable is missing or empty. Check Railway → service → **Variables** (this one is read by the worker at job time, so the app boots fine without it and only fails when you start a conversion).
 
-**Worker says `POE_API_KEY environment variable is not set` / `No Poe bot configured for OCR`:**
-Only relevant when `ocr.engine: poe`. Set `POE_API_KEY` (from [poe.com/api_key](https://poe.com/api_key)) and `POE_MODEL` (a vision-capable bot name from your Poe account — there's no default) in Railway → service → **Variables**.
+**Job fails with `Poe OCR is not configured`:**
+Only relevant when `ocr.engine: poe`. Sign in and enter your Poe API key + bot/model name on the **Settings** page, or set `POE_API_KEY`/`POE_MODEL` in Railway → service → **Variables** instead. Unlike Gemini, a missing Poe key doesn't stop the worker from starting (it can't — credentials may only be added later via Settings), so this surfaces as a failed job rather than a boot-time crash.
 
 **Job fails with `Daily Gemini quota reached`:**
 You've used all your free calls today. Wait until midnight Pacific Time (~UTC-7), or pause the job and resume tomorrow — cached pages will not be re-spent.

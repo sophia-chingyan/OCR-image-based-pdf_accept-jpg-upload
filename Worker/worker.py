@@ -198,6 +198,11 @@ def run_pipeline(r, job: dict, engine) -> None:
     language_hints = job.get("language_hints") or []
     engine.set_language_hints(language_hints)
     engine.reset_page_cache()
+    # Pick up any POE_API_KEY / POE_MODEL saved via the Settings page since
+    # this engine was loaded. Not part of the OCREngine ABC (only PoeOCREngine
+    # implements it), hence the hasattr guard.
+    if hasattr(engine, "refresh_runtime_settings"):
+        engine.refresh_runtime_settings(r)
 
     ingested = None
 

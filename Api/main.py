@@ -225,6 +225,15 @@ async def library(request: Request):
     async with aiofiles.open(library_path) as f:
         return HTMLResponse(await f.read())
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/", status_code=302)
+    settings_path = _static_dir / "settings.html"
+    async with aiofiles.open(settings_path) as f:
+        return HTMLResponse(await f.read())
+
 # ── Upload ────────────────────────────────────────────────────────────────────
 @app.post("/api/upload")
 async def upload_pdf(
@@ -665,3 +674,69 @@ async def get_config():
     return JSONResponse({
         "max_pdf_size_mb": CFG["pipeline"]["max_pdf_size_mb"],
     })
+
+# ── User-provided Poe OCR settings ───────────────────────────────────────────
+# Lets the logged-in user supply their own POE_API_KEY / POE_MODEL at
+# runtime (Settings page) instead of only via environment variables. Stored
+# in Redis so both the API and the worker thread see the same values
+# (store.py shares one connection/FakeServer between them). The worker
+# picks up changes at the start of each job via
+# PoeOCREngine.refresh_runtime_settings() — see Worker/poe_engine.py.
+#
+# NOTE: without REDIS_URL (the default), this lives in the in-process
+# fakeredis store and is lost on restart/redeploy, same as job history —
+# see "Persisting uploads and outputs" in the README.
+async def _settings_payload(r) -> dict:
+    api_key = (await r.get("settings:poe_api_key") or "").strip()
+    model   = (await r.get("settings:poe_model") or "").strip()
+    return {
+        "ocr_engine": OCR_ENGINE,
+        "poe_api_key_set": bool(api_key),
+        "poe_api_key_preview": (f"····{api_key[-4:]}" if len(api_key) >= 4 else ("····" if api_key else "")),
+        "poe_model": model,
+        # What PoeOCREngine falls back to when no value is saved here.
+        "poe_model_env_default": POE_MODEL or None,
+    }
+
+@app.get("/api/settings")
+async def get_settings(user: str = Depends(require_auth)):
+    r = await get_async_redis()
+    try:
+        return JSONResponse(await _settings_payload(r))
+    finally:
+        await r.aclose()
+
+@app.post("/api/settings")
+async def save_settings(request: Request, user: str = Depends(require_auth)):
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    if not isinstance(body, dict):
+        body = {}
+
+    r = await get_async_redis()
+    try:
+        # A field only changes the stored value when the client explicitly
+        # includes it in the request body: an empty string clears it, and
+        # omitting the key entirely leaves whatever is already saved
+        # untouched (so the API key doesn't need to be retyped just to
+        # change the model name).
+        if "poe_model" in body:
+            model = str(body.get("poe_model") or "").strip()
+            if model:
+                await r.set("settings:poe_model", model)
+            else:
+                await r.delete("settings:poe_model")
+
+        if "poe_api_key" in body:
+            key = str(body.get("poe_api_key") or "").strip()
+            if key:
+                await r.set("settings:poe_api_key", key)
+            else:
+                await r.delete("settings:poe_api_key")
+
+        return JSONResponse(await _settings_payload(r))
+    finally:
+        await r.aclose()
