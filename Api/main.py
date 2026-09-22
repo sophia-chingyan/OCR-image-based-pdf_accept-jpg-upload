@@ -30,10 +30,15 @@ with open(CONFIG_PATH) as f:
     CFG = yaml.safe_load(f)
 
 MAX_UPLOAD_BYTES = CFG["pipeline"]["max_pdf_size_mb"] * 1024 * 1024
-OCR_ENGINE = CFG["ocr"].get("engine", "gemini").lower()
+OCR_ENGINE = CFG["ocr"].get("engine", "gemini").lower()  # config.yaml's default, overridable per-job — see _effective_ocr_engine
 GEMINI_MODEL = gemini_model(CFG["ocr"].get("model_name"))
 POE_MODEL = poe_model(CFG["ocr"].get("poe_model_name"))
 IMAGE_EXTENSIONS = (".jpg", ".jpeg")
+# Kept in sync by hand with Worker/engine_factory.py's ENGINES dict — not
+# imported directly because that module (and the ones it imports) rely on
+# Worker/ being on sys.path, which only happens once Worker.worker is first
+# imported (inside lifespan(), i.e. after this module has already loaded).
+VALID_OCR_ENGINES = ("gemini", "poe")
 ensure_dirs()
 
 require_env("SECRET_KEY", "ALLOWED_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
@@ -647,11 +652,14 @@ async def delete_job(job_id: str, user: str = Depends(require_auth)):
 @app.get("/health")
 async def health():
     r = await get_async_redis()
+    redis_ok = False
+    effective_engine = OCR_ENGINE
     try:
         await r.ping()
         redis_ok = True
+        effective_engine = await _effective_ocr_engine(r)
     except Exception:
-        redis_ok = False
+        pass
     finally:
         await r.aclose()
     from Worker.worker import get_worker_health
@@ -661,7 +669,10 @@ async def health():
         "redis": redis_ok,
         "worker": worker_ok,
         "worker_error": worker_err if not worker_ok else "",
-        "ocr_engine": OCR_ENGINE,
+        # The engine actually in effect right now — Settings-page choice if
+        # one is saved, else config.yaml's ocr.engine. Falls back to the
+        # static config.yaml value if Redis is unreachable.
+        "ocr_engine": effective_engine,
         # Which model/bot this deploy is actually using for OCR, so a
         # GEMINI_MODEL / POE_MODEL change can be confirmed without reading
         # the logs. Only the field matching ocr_engine is actually in use.
@@ -675,22 +686,39 @@ async def get_config():
         "max_pdf_size_mb": CFG["pipeline"]["max_pdf_size_mb"],
     })
 
-# ── User-provided Poe OCR settings ───────────────────────────────────────────
-# Lets the logged-in user supply their own POE_API_KEY / POE_MODEL at
+# ── User-provided OCR engine choice + Poe settings ───────────────────────────
+# Lets the logged-in user pick which OCR engine runs (instead of only
+# config.yaml's ocr.engine) and supply their own POE_API_KEY / POE_MODEL at
 # runtime (Settings page) instead of only via environment variables. Stored
 # in Redis so both the API and the worker thread see the same values
 # (store.py shares one connection/FakeServer between them). The worker
-# picks up changes at the start of each job via
+# re-resolves the engine choice at the start of each job
+# (Worker.worker._resolve_engine_name) and refreshes Poe credentials via
 # PoeOCREngine.refresh_runtime_settings() — see Worker/poe_engine.py.
 #
 # NOTE: without REDIS_URL (the default), this lives in the in-process
 # fakeredis store and is lost on restart/redeploy, same as job history —
 # see "Persisting uploads and outputs" in the README.
+async def _effective_ocr_engine(r) -> str:
+    saved = (await r.get("settings:ocr_engine") or "").strip().lower()
+    return saved if saved in VALID_OCR_ENGINES else OCR_ENGINE
+
 async def _settings_payload(r) -> dict:
     api_key = (await r.get("settings:poe_api_key") or "").strip()
     model   = (await r.get("settings:poe_model") or "").strip()
+    saved_engine = (await r.get("settings:ocr_engine") or "").strip().lower()
+    if saved_engine not in VALID_OCR_ENGINES:
+        saved_engine = ""
     return {
-        "ocr_engine": OCR_ENGINE,
+        # What's actually in effect right now (saved_engine, or the
+        # config.yaml default when nothing is saved).
+        "ocr_engine": saved_engine or OCR_ENGINE,
+        # "" means "using the server default" — lets the UI show a
+        # distinct "Server default" option rather than pre-selecting
+        # whichever engine that happens to resolve to today.
+        "ocr_engine_saved": saved_engine,
+        "ocr_engine_default": OCR_ENGINE,
+        "ocr_engines_available": list(VALID_OCR_ENGINES),
         "poe_api_key_set": bool(api_key),
         "poe_api_key_preview": (f"····{api_key[-4:]}" if len(api_key) >= 4 else ("····" if api_key else "")),
         "poe_model": model,
@@ -719,10 +747,18 @@ async def save_settings(request: Request, user: str = Depends(require_auth)):
     r = await get_async_redis()
     try:
         # A field only changes the stored value when the client explicitly
-        # includes it in the request body: an empty string clears it, and
-        # omitting the key entirely leaves whatever is already saved
+        # includes it in the request body: an empty string (or, for
+        # ocr_engine, any value that isn't a known engine name) clears it,
+        # and omitting the key entirely leaves whatever is already saved
         # untouched (so the API key doesn't need to be retyped just to
-        # change the model name).
+        # change the model name or engine choice).
+        if "ocr_engine" in body:
+            choice = str(body.get("ocr_engine") or "").strip().lower()
+            if choice in VALID_OCR_ENGINES:
+                await r.set("settings:ocr_engine", choice)
+            else:
+                await r.delete("settings:ocr_engine")
+
         if "poe_model" in body:
             model = str(body.get("poe_model") or "").strip()
             if model:

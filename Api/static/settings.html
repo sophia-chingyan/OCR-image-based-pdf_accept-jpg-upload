@@ -143,14 +143,27 @@
   <div class="page-wrap">
     <div class="page-header">
       <h1>Settings</h1>
-      <div class="subtitle">Your Poe API credentials for OCR — saved here instead of the server's environment variables.</div>
+      <div class="subtitle">Choose which OCR engine runs, and enter your Poe credentials — saved here instead of editing config.yaml or environment variables.</div>
     </div>
 
-    <div id="engine-banner"></div>
+    <form id="settings-form">
+      <div class="section-label">OCR Engine</div>
+      <div class="settings-card" style="margin-bottom:1.5rem">
+        <div class="field-block">
+          <label class="field-label" for="ocr-engine-select">Engine used for OCR</label>
+          <select id="ocr-engine-select" class="text-input">
+            <option value="">Server default</option>
+            <option value="gemini">Gemini</option>
+            <option value="poe">Poe</option>
+          </select>
+          <div class="field-hint">Takes effect on the next job — no restart needed. "Server default" follows <code>ocr.engine</code> in <code>config.yaml</code>, whatever that's currently set to.</div>
+        </div>
+      </div>
 
-    <div class="settings-card">
-      <div class="section-label">Poe API</div>
-      <form id="settings-form">
+      <div id="engine-banner"></div>
+
+      <div class="settings-card">
+        <div class="section-label">Poe API</div>
         <div class="field-block">
           <label class="field-label" for="poe-model">Bot / model name</label>
           <input type="text" id="poe-model" class="text-input" placeholder="e.g. Claude-Sonnet-4.5" autocomplete="off"/>
@@ -166,15 +179,16 @@
           <button type="submit" class="btn btn-primary">Save</button>
           <a href="https://poe.com/api_key" target="_blank" rel="noopener" class="btn btn-ghost">Get a Poe API key ↗</a>
         </div>
-      </form>
-    </div>
+      </div>
+    </form>
   </div>
 
   <div class="toast" id="toast"></div>
 
 <script>
 const $ = id => document.getElementById(id);
-const form = $('settings-form'), modelInput = $('poe-model'), keyInput = $('poe-api-key'),
+const form = $('settings-form'), engineSelect = $('ocr-engine-select'),
+  modelInput = $('poe-model'), keyInput = $('poe-api-key'),
   keyHint = $('key-hint'), clearBtn = $('clear-key-btn'), engineBanner = $('engine-banner'),
   toast = $('toast');
 
@@ -192,7 +206,18 @@ async function api(path, opts) {
   return res;
 }
 
+const ENGINE_LABELS = { gemini: 'Gemini', poe: 'Poe' };
+
 function renderSettings(s) {
+  // "" (ocr_engine_saved) means "no override saved — following the server
+  // default", so the select shows that option rather than pre-selecting
+  // whichever engine the default currently happens to be.
+  engineSelect.value = s.ocr_engine_saved || '';
+  const defaultOption = engineSelect.querySelector('option[value=""]');
+  if (defaultOption) {
+    defaultOption.textContent = `Server default (${ENGINE_LABELS[s.ocr_engine_default] || s.ocr_engine_default})`;
+  }
+
   modelInput.value = s.poe_model || '';
   modelInput.placeholder = s.poe_model_env_default
     ? `Default from server environment: ${s.poe_model_env_default}`
@@ -204,9 +229,10 @@ function renderSettings(s) {
     : 'No key saved yet — get one at <a href="https://poe.com/api_key" target="_blank" rel="noopener">poe.com/api_key</a>.';
   clearBtn.style.display = s.poe_api_key_set ? 'inline-flex' : 'none';
 
+  const activeLabel = ENGINE_LABELS[s.ocr_engine] || s.ocr_engine;
   engineBanner.innerHTML = s.ocr_engine === 'poe'
-    ? `<div class="info-msg">✓ The Poe engine is currently active for OCR — these settings are in effect.</div>`
-    : `<div class="warn-msg">⚠ The server's active OCR engine is <strong>${esc(s.ocr_engine)}</strong>, not Poe. These settings are saved, but won't be used until the server's <code>config.yaml</code> sets <code>ocr.engine: poe</code>.</div>`;
+    ? `<div class="info-msg">✓ <strong>Poe</strong> is the active OCR engine — the credentials below are in effect.</div>`
+    : `<div class="warn-msg">ℹ <strong>${esc(activeLabel)}</strong> is the active OCR engine right now, so the Poe credentials below aren't being used yet. Select <strong>Poe</strong> above and Save to switch.</div>`;
 }
 
 async function loadSettings() {
@@ -219,7 +245,7 @@ async function loadSettings() {
 
 form.addEventListener('submit', async e => {
   e.preventDefault();
-  const payload = { poe_model: modelInput.value.trim() };
+  const payload = { ocr_engine: engineSelect.value, poe_model: modelInput.value.trim() };
   if (keyInput.value.trim()) payload.poe_api_key = keyInput.value.trim();
   try {
     const res = await api('/api/settings', {

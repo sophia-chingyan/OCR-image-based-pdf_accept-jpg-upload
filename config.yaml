@@ -1,5 +1,9 @@
 ocr:
-  # "gemini" (default) or "poe" — see Worker/engine_factory.py.
+  # "gemini" (default) or "poe" — see Worker/engine_factory.py. This is only
+  # the FALLBACK default: the app's Settings page (sign in → Settings →
+  # "Engine used for OCR") lets the user pick either engine per job, at
+  # runtime, without a redeploy — that choice takes priority over this key
+  # whenever one is saved there.
   engine: gemini
   # Overridden by the GEMINI_MODEL environment variable when that is set,
   # so the model can be switched from the host's Variables UI.
