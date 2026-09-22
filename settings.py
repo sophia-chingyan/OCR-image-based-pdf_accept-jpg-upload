@@ -98,3 +98,27 @@ def gemini_model(config_value: str | None = None) -> str:
 
     cfg_value = (config_value or "").strip() if isinstance(config_value, str) else ""
     return cfg_value or DEFAULT_GEMINI_MODEL
+
+
+def poe_model(config_value: str | None = None) -> str:
+    """
+    Which Poe bot to use for OCR when ocr.engine is "poe".
+
+    Unlike Gemini, Poe has no platform-wide default model — every request
+    must name a specific bot, and which bots you can call depends on your
+    Poe account. Resolution order, most specific first:
+
+    1. `POE_MODEL` environment variable — lets the bot be swapped from the
+       host's variables UI (Railway: service → Variables) without a code
+       change or a redeploy of config.yaml,
+    2. `ocr.poe_model_name` in config.yaml (passed in as `config_value`).
+
+    Returns "" if neither is set, so PoeOCREngine.load() can fail fast with
+    an actionable error rather than silently guessing a bot name that might
+    not exist on your account.
+    """
+    env_value = (os.environ.get("POE_MODEL") or "").strip()
+    if env_value:
+        return env_value
+
+    return (config_value or "").strip() if isinstance(config_value, str) else ""

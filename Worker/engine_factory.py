@@ -3,7 +3,7 @@ Engine Factory
 ==============
 Returns the configured OCR engine instance.
 
-Currently supported engine: gemini.
+Currently supported engines: gemini (default), poe.
 
 To add a new engine in the future:
 1. Implement OCREngine in a new file (e.g. claude_vision_engine.py)
@@ -29,6 +29,7 @@ def get_engine(config: dict) -> OCREngine:
 
     ENGINES = {
         "gemini": _load_gemini,
+        "poe":    _load_poe,
     }
 
     factory = ENGINES.get(engine_name)
@@ -45,3 +46,8 @@ def get_engine(config: dict) -> OCREngine:
 def _load_gemini(config: dict) -> OCREngine:
     from gemini_engine import GeminiOCREngine
     return GeminiOCREngine(config)
+
+
+def _load_poe(config: dict) -> OCREngine:
+    from poe_engine import PoeOCREngine
+    return PoeOCREngine(config)

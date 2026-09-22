@@ -1,19 +1,25 @@
 ocr:
+  # "gemini" (default) or "poe" — see Worker/engine_factory.py.
   engine: gemini
   # Overridden by the GEMINI_MODEL environment variable when that is set,
   # so the model can be switched from the host's Variables UI.
   model_name: "gemini-3.5-flash-lite"
-  rpm_limit: 2000
-  rpd_limit: 10000
+  # Poe bot name, only used when engine: poe. No default exists — Poe has no
+  # platform-wide default model, so this (or the POE_MODEL env var, which
+  # wins if set) MUST name a vision-capable bot available in your Poe
+  # account, e.g. "Claude-Sonnet-4.5". Confirm the exact name at
+  # https://poe.com before deploying.
+  # poe_model_name: "Claude-Sonnet-4.5"
+  rpm_limit: 2000                # gemini paid-tier default; poe clamps this to its 500/min ceiling regardless
+  rpd_limit: 10000                       # paid plan; lower to your free-tier RPD
   max_retries: 8                # was 5 — rides out longer 503 "high demand" spikes
   request_timeout_s: 180
   confidence_threshold: 0.7
   dpi: 300
 
-  # Optional backoff tuning for transient Gemini errors (429 / 5xx).
-  # The retry logic reads these via getattr() with the defaults shown below,
-  # so they are OPTIONAL — uncomment only if you wire them into the engine's
-  # __init__ (e.g. self._retry_backoff_base_s = cfg.get("retry_backoff_base_s", 4.0)).
+  # Optional backoff tuning for transient errors (429 / 5xx), shared by
+  # both the gemini and poe engines. OPTIONAL — uncomment to override the
+  # defaults shown below.
   # retry_backoff_base_s: 4.0   # first-retry base wait, seconds
   # retry_backoff_cap_s: 120.0  # maximum single backoff wait, seconds
 
