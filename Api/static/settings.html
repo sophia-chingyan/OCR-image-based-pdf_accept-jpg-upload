@@ -143,7 +143,7 @@
   <div class="page-wrap">
     <div class="page-header">
       <h1>Settings</h1>
-      <div class="subtitle">Choose which OCR engine runs, and enter your Poe credentials — saved here instead of editing config.yaml or environment variables.</div>
+      <div class="subtitle">Choose which OCR engine runs, and enter your Poe / OpenRouter credentials — saved here instead of editing config.yaml or environment variables.</div>
     </div>
 
     <form id="settings-form">
@@ -155,6 +155,7 @@
             <option value="">Server default</option>
             <option value="gemini">Gemini</option>
             <option value="poe">Poe</option>
+            <option value="openrouter">OpenRouter</option>
           </select>
           <div class="field-hint">Takes effect on the next job — no restart needed. "Server default" follows <code>ocr.engine</code> in <code>config.yaml</code>, whatever that's currently set to.</div>
         </div>
@@ -162,7 +163,7 @@
 
       <div id="engine-banner"></div>
 
-      <div class="settings-card">
+      <div class="settings-card" style="margin-bottom:1.5rem">
         <div class="section-label">Poe API</div>
         <div class="field-block">
           <label class="field-label" for="poe-model">Bot / model name</label>
@@ -173,12 +174,33 @@
           <label class="field-label" for="poe-api-key">API key</label>
           <input type="password" id="poe-api-key" class="text-input" placeholder="Enter your Poe API key" autocomplete="off"/>
           <div class="field-hint" id="key-hint"></div>
-          <button type="button" id="clear-key-btn" class="btn btn-ghost btn-sm" style="margin-top:.6rem;display:none">Remove saved key</button>
+          <div style="display:flex;gap:.6rem;align-items:center;margin-top:.6rem;flex-wrap:wrap">
+            <a href="https://poe.com/api_key" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Get a Poe API key ↗</a>
+            <button type="button" id="clear-key-btn" class="btn btn-ghost btn-sm" style="display:none">Remove saved key</button>
+          </div>
         </div>
-        <div class="form-actions">
-          <button type="submit" class="btn btn-primary">Save</button>
-          <a href="https://poe.com/api_key" target="_blank" rel="noopener" class="btn btn-ghost">Get a Poe API key ↗</a>
+      </div>
+
+      <div class="settings-card">
+        <div class="section-label">OpenRouter API</div>
+        <div class="field-block">
+          <label class="field-label" for="openrouter-model">Model slug</label>
+          <input type="text" id="openrouter-model" class="text-input" placeholder="e.g. anthropic/claude-sonnet-4.5" autocomplete="off"/>
+          <div class="field-hint">A vision-capable model slug from <a href="https://openrouter.ai/models" target="_blank" rel="noopener">openrouter.ai/models</a> (filter for image input). OpenRouter has no default model either — confirm the exact slug before saving.</div>
         </div>
+        <div class="field-block">
+          <label class="field-label" for="openrouter-api-key">API key</label>
+          <input type="password" id="openrouter-api-key" class="text-input" placeholder="Enter your OpenRouter API key" autocomplete="off"/>
+          <div class="field-hint" id="openrouter-key-hint"></div>
+          <div style="display:flex;gap:.6rem;align-items:center;margin-top:.6rem;flex-wrap:wrap">
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Get an OpenRouter API key ↗</a>
+            <button type="button" id="openrouter-clear-key-btn" class="btn btn-ghost btn-sm" style="display:none">Remove saved key</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save</button>
       </div>
     </form>
   </div>
@@ -190,6 +212,8 @@ const $ = id => document.getElementById(id);
 const form = $('settings-form'), engineSelect = $('ocr-engine-select'),
   modelInput = $('poe-model'), keyInput = $('poe-api-key'),
   keyHint = $('key-hint'), clearBtn = $('clear-key-btn'), engineBanner = $('engine-banner'),
+  openrouterModelInput = $('openrouter-model'), openrouterKeyInput = $('openrouter-api-key'),
+  openrouterKeyHint = $('openrouter-key-hint'), openrouterClearBtn = $('openrouter-clear-key-btn'),
   toast = $('toast');
 
 function showToast(m, d = 3000) { toast.textContent = m; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), d); }
@@ -206,7 +230,7 @@ async function api(path, opts) {
   return res;
 }
 
-const ENGINE_LABELS = { gemini: 'Gemini', poe: 'Poe' };
+const ENGINE_LABELS = { gemini: 'Gemini', poe: 'Poe', openrouter: 'OpenRouter' };
 
 function renderSettings(s) {
   // "" (ocr_engine_saved) means "no override saved — following the server
@@ -229,10 +253,25 @@ function renderSettings(s) {
     : 'No key saved yet — get one at <a href="https://poe.com/api_key" target="_blank" rel="noopener">poe.com/api_key</a>.';
   clearBtn.style.display = s.poe_api_key_set ? 'inline-flex' : 'none';
 
+  openrouterModelInput.value = s.openrouter_model || '';
+  openrouterModelInput.placeholder = s.openrouter_model_env_default
+    ? `Default from server environment: ${s.openrouter_model_env_default}`
+    : 'e.g. anthropic/claude-sonnet-4.5';
+
+  openrouterKeyInput.value = '';
+  openrouterKeyHint.innerHTML = s.openrouter_api_key_set
+    ? `Saved key ending in <code>${esc(s.openrouter_api_key_preview)}</code> — leave blank to keep it, or type a new key to replace it.`
+    : 'No key saved yet — get one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>.';
+  openrouterClearBtn.style.display = s.openrouter_api_key_set ? 'inline-flex' : 'none';
+
   const activeLabel = ENGINE_LABELS[s.ocr_engine] || s.ocr_engine;
-  engineBanner.innerHTML = s.ocr_engine === 'poe'
-    ? `<div class="info-msg">✓ <strong>Poe</strong> is the active OCR engine — the credentials below are in effect.</div>`
-    : `<div class="warn-msg">ℹ <strong>${esc(activeLabel)}</strong> is the active OCR engine right now, so the Poe credentials below aren't being used yet. Select <strong>Poe</strong> above and Save to switch.</div>`;
+  if (s.ocr_engine === 'poe') {
+    engineBanner.innerHTML = `<div class="info-msg">✓ <strong>Poe</strong> is the active OCR engine — the Poe credentials below are in effect.</div>`;
+  } else if (s.ocr_engine === 'openrouter') {
+    engineBanner.innerHTML = `<div class="info-msg">✓ <strong>OpenRouter</strong> is the active OCR engine — the OpenRouter credentials below are in effect.</div>`;
+  } else {
+    engineBanner.innerHTML = `<div class="warn-msg">ℹ <strong>${esc(activeLabel)}</strong> is the active OCR engine right now, so the Poe/OpenRouter credentials below aren't being used yet. Select one above and Save to switch.</div>`;
+  }
 }
 
 async function loadSettings() {
@@ -245,8 +284,13 @@ async function loadSettings() {
 
 form.addEventListener('submit', async e => {
   e.preventDefault();
-  const payload = { ocr_engine: engineSelect.value, poe_model: modelInput.value.trim() };
+  const payload = {
+    ocr_engine: engineSelect.value,
+    poe_model: modelInput.value.trim(),
+    openrouter_model: openrouterModelInput.value.trim(),
+  };
   if (keyInput.value.trim()) payload.poe_api_key = keyInput.value.trim();
+  if (openrouterKeyInput.value.trim()) payload.openrouter_api_key = openrouterKeyInput.value.trim();
   try {
     const res = await api('/api/settings', {
       method: 'POST',
@@ -266,6 +310,20 @@ clearBtn.addEventListener('click', async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ poe_api_key: '' }),
+    });
+    if (!res.ok) throw new Error('Failed to remove key.');
+    renderSettings(await res.json());
+    showToast('API key removed.');
+  } catch (e) { showToast(e.message); }
+});
+
+openrouterClearBtn.addEventListener('click', async () => {
+  if (!confirm('Remove your saved OpenRouter API key? OCR will fall back to the server\'s OPENROUTER_API_KEY environment variable, if any.')) return;
+  try {
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ openrouter_api_key: '' }),
     });
     if (!res.ok) throw new Error('Failed to remove key.');
     renderSettings(await res.json());

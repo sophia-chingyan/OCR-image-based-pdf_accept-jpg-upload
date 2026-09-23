@@ -122,3 +122,30 @@ def poe_model(config_value: str | None = None) -> str:
         return env_value
 
     return (config_value or "").strip() if isinstance(config_value, str) else ""
+
+
+def openrouter_model(config_value: str | None = None) -> str:
+    """
+    Which OpenRouter model slug to use for OCR when ocr.engine is
+    "openrouter".
+
+    Like Poe, OpenRouter has no platform-wide default model — every request
+    must name a specific model slug (e.g. "anthropic/claude-sonnet-4.5"),
+    and which models are worth using depends on your account/budget.
+    Resolution order, most specific first:
+
+    1. `OPENROUTER_MODEL` environment variable — lets the model be swapped
+       from the host's variables UI (Railway: service → Variables) without
+       a code change or a redeploy of config.yaml,
+    2. `ocr.openrouter_model_name` in config.yaml (passed in as
+       `config_value`).
+
+    Returns "" if neither is set, so OpenRouterOCREngine.load() can fail
+    fast with an actionable error rather than silently guessing a model
+    slug that might not exist or support vision input.
+    """
+    env_value = (os.environ.get("OPENROUTER_MODEL") or "").strip()
+    if env_value:
+        return env_value
+
+    return (config_value or "").strip() if isinstance(config_value, str) else ""

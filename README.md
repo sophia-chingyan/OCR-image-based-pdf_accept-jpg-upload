@@ -3,7 +3,7 @@
 Self-hosted, single-user web app that converts **image-based PDF files and JPG images** to clean, re-typeset PDF files using **Google Gemini** for OCR.
 
 - ✅ Upload **PDF or JPG/JPEG** files — a JPG is auto-wrapped into a one-page PDF and OCR'd the same way
-- ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default, switchable with the `GEMINI_MODEL` variable) — or via **Poe** (any vision-capable bot on Poe: Claude, GPT, Gemini, …), selectable with `ocr.engine: poe` in `config.yaml`
+- ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default, switchable with the `GEMINI_MODEL` variable) — or via **Poe** or **OpenRouter** (any vision-capable model either routes to: Claude, GPT, Gemini, …), selectable per job from the app's **Settings** page (or `ocr.engine` in `config.yaml` as the fallback default)
 - ✅ Languages: Traditional Chinese, Simplified Chinese, Japanese, Korean, English (and 100+ others)
 - ✅ Auto-detects horizontal / vertical text layout per page
 - ✅ Clean PDF with correct CJK font/CMap per detected language
@@ -226,78 +226,92 @@ Then `docker compose restart app` to apply. Locally you can also set
 Note that the rate limits stay in `config.yaml`: a model switch does not change
 `rpm_limit` / `rpd_limit`, so lower them there if the new model's quota is tighter.
 
-### Using Poe instead of Gemini
+### Using Poe or OpenRouter instead of Gemini
 
-If you'd rather draw on an existing [Poe](https://poe.com) subscription/points
-balance than a separate Google AI Studio key, switch to the Poe engine
-(`Worker/poe_engine.py`), which sends the same OCR prompt to a vision-capable
-bot on Poe (Claude, GPT, Gemini, etc.) via Poe's OpenAI-compatible API
-instead of calling Gemini directly.
+If you'd rather draw on an existing [Poe](https://poe.com) points balance or
+[OpenRouter](https://openrouter.ai) credits than a separate Google AI Studio
+key, switch to one of the other two engines (`Worker/poe_engine.py` /
+`Worker/openrouter_engine.py`), which send the same OCR prompt to a
+vision-capable model on that platform (Claude, GPT, Gemini, Llama, etc.) via
+its OpenAI-compatible API instead of calling Gemini directly.
 
 **Everything here is self-service from the running app — no redeploy
 needed.** Sign in and open **Settings** (nav bar):
 
-1. **Engine used for OCR** — pick **Poe** (or leave it on **Server
-   default**, which follows `ocr.engine` in `config.yaml`, itself still
-   `gemini` unless you change it — see "config.yaml alternative" below).
-   Takes effect on the *next* job; the worker doesn't need to restart.
-2. **Bot / model name** — a vision-capable bot **from your own Poe
-   account**, e.g. `Claude-Sonnet-4.5`. Poe has no platform-wide default
-   model (unlike Gemini), so this is required; confirm the exact bot name at
-   [poe.com](https://poe.com) rather than assuming the example above is
-   current.
-3. **API key** — from [poe.com/api_key](https://poe.com/api_key).
+1. **Engine used for OCR** — pick **Poe** or **OpenRouter** (or leave it on
+   **Server default**, which follows `ocr.engine` in `config.yaml`, itself
+   still `gemini` unless you change it — see "config.yaml alternative"
+   below). Takes effect on the *next* job; the worker doesn't need to
+   restart.
+2. **Bot / model name** (Poe) or **Model slug** (OpenRouter) — a
+   vision-capable model **from your own account on that platform**, e.g.
+   `Claude-Sonnet-4.5` on Poe, or `anthropic/claude-sonnet-4.5` on
+   OpenRouter. Neither platform has a built-in default model, so this is
+   required; confirm the exact name at [poe.com](https://poe.com) or
+   [openrouter.ai/models](https://openrouter.ai/models) (filter for image
+   input) rather than assuming the examples above are current.
+3. **API key** — from [poe.com/api_key](https://poe.com/api_key) or
+   [openrouter.ai/keys](https://openrouter.ai/keys).
 
-Since the engine is now chosen per job rather than fixed at worker startup,
-you can flip between Gemini and Poe from Settings at any time — a missing
-or bad credential for one engine no longer prevents the *other* engine (or
-the worker itself) from running; it only fails the jobs that actually try
-to use it, with the error visible on that job.
+You only need to fill in the section for whichever engine you actually
+select — the other one can stay blank. Since the engine is chosen per job
+rather than fixed at worker startup, you can flip between all three engines
+from Settings at any time — a missing or bad credential for one no longer
+prevents the *others* (or the worker itself) from running; it only fails
+the jobs that actually try to use it.
 
-All three saved values are picked up by the worker at the start of the next
-job and take priority over their `config.yaml` / environment-variable
+All saved values are picked up by the worker at the start of the next job
+and take priority over their `config.yaml` / environment-variable
 equivalents when set — see the fallback options below. They're stored in
-Redis (`settings:ocr_engine`, `settings:poe_api_key`, `settings:poe_model`)
-shared between the API and worker — **without `REDIS_URL`** (the default),
-that's the in-process fakeredis store, so saved settings are lost on every
+Redis (`settings:ocr_engine`, `settings:poe_api_key`, `settings:poe_model`,
+`settings:openrouter_api_key`, `settings:openrouter_model`) shared between
+the API and worker — **without `REDIS_URL`** (the default), that's the
+in-process fakeredis store, so saved settings are lost on every
 restart/redeploy just like job history; set `REDIS_URL` to a real Redis if
 you want them to persist (see "Persisting uploads and outputs" above; a
 Redis add-on serves the same purpose here as the volume does for files).
 
 #### config.yaml / environment-variable alternative
 
-You can still manage all three the deploy-time way instead — useful for a
+You can still manage all of this the deploy-time way instead — useful for a
 headless deploy, or as the fallback default the Settings page falls back to
 when its own fields are left on "Server default" / blank:
 
 | Setting | Where | Value |
 |---|---|---|
-| Engine | `config.yaml` → `ocr.engine` | `gemini` (default) or `poe` |
+| Engine | `config.yaml` → `ocr.engine` | `gemini` (default), `poe`, or `openrouter` |
 | `POE_API_KEY` | env var | API key from [poe.com/api_key](https://poe.com/api_key) |
 | `POE_MODEL` | env var, or `config.yaml` → `ocr.poe_model_name` | Bot name from your Poe account, e.g. `Claude-Sonnet-4.5` |
+| `OPENROUTER_API_KEY` | env var | API key from [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `OPENROUTER_MODEL` | env var, or `config.yaml` → `ocr.openrouter_model_name` | Model slug, e.g. `anthropic/claude-sonnet-4.5` |
 
 ```yaml
 ocr:
-  engine: poe
+  engine: openrouter   # or "poe"
   poe_model_name: "Claude-Sonnet-4.5"
+  openrouter_model_name: "anthropic/claude-sonnet-4.5"
 ```
 
 #### Things that work differently from the Gemini engine
 
-- **Cost:** Poe isn't free the way Gemini's free tier is — calls draw down
-  your Poe subscription's monthly points (or purchased add-on points), not
-  a per-token API bill.
+- **Cost:** neither is free the way Gemini's free tier is. Poe calls draw
+  down your Poe subscription's monthly points (or purchased add-on
+  points); OpenRouter calls draw down ordinary per-token credits (closer to
+  Gemini's own billing model, just routed through a different account).
 - **Rate limit:** Poe's external API enforces a flat **500 requests/minute**
-  per account; the engine clamps `ocr.rpm_limit` to that ceiling
-  automatically, so you don't need to lower it yourself when switching from
-  Gemini's paid-tier `rpm_limit: 2000`.
-- **No daily quota / no tiling fallback:** unlike the Gemini engine, there's
-  no `rpd_limit`-style daily cap (Poe has no daily reset), and diagram/
-  sparse-text pages that come back with zero blocks are not retried as
-  tiled quadrants — they're treated as image-only.
+  per account, and the engine clamps `ocr.rpm_limit` to that ceiling
+  automatically. OpenRouter has **no single universal ceiling** — limits
+  are mostly inherited from whichever upstream provider serves your chosen
+  model, except free (`:free`-suffixed) models, which are capped at **20
+  requests/minute** (and 50–1,000 requests/day depending on credits
+  purchased) — tune `ocr.rpm_limit` yourself to match the model you pick.
+- **No daily quota / no tiling fallback:** unlike the Gemini engine,
+  neither has an `rpd_limit`-style daily cap (no daily reset), and
+  diagram/sparse-text pages that come back with zero blocks are not
+  retried as tiled quadrants — they're treated as image-only.
 - Confirm which engine/model a running deploy is actually using right now
-  with `GET /health` (`ocr_engine`, `gemini_model`, `poe_model`) or the
-  Settings page itself.
+  with `GET /health` (`ocr_engine`, `gemini_model`, `poe_model`,
+  `openrouter_model`) or the Settings page itself.
 
 ---
 
@@ -337,9 +351,10 @@ ocr-pdf/
 └── Worker/
     ├── worker.py           # job loop + per-page OCR caching
     ├── ocr_engine.py       # abstract OCREngine interface
-    ├── engine_factory.py   # "gemini" (default) and "poe" registered
+    ├── engine_factory.py   # "gemini" (default), "poe", "openrouter" registered
     ├── gemini_engine.py    # ⭐ the Gemini API integration
     ├── poe_engine.py       # the Poe (api.poe.com) integration — alt. engine
+    ├── openrouter_engine.py # the OpenRouter (openrouter.ai) integration — alt. engine
     ├── pdf_ingestion.py    # PyMuPDF + JPG→1-page-PDF conversion
     ├── structure_analysis.py # text → headings / paragraphs / footnotes / …
     └── pdf_assembly.py     # ReportLab / PyMuPDF: clean PDF output
@@ -356,7 +371,10 @@ Add the named variables in Railway → service → **Variables**. The deploy wil
 The variable is missing or empty. Check Railway → service → **Variables**. This is read when a job first selects the Gemini engine, not at worker boot — so the app (and the worker thread) start fine without it, and only a job that actually tries to use Gemini fails, with this message. If you only intend to use Poe, you can ignore it.
 
 **Job fails with `Poe OCR is not configured`:**
-Only relevant when the Poe engine is selected (Settings → Engine used for OCR, or `ocr.engine: poe`). Sign in and enter your Poe API key + bot/model name on the **Settings** page, or set `POE_API_KEY`/`POE_MODEL` in Railway → service → **Variables** instead. Like the Gemini case above, a missing Poe key doesn't stop the worker or the other engine from running — it only fails jobs that select Poe.
+Only relevant when the Poe engine is selected (Settings → Engine used for OCR, or `ocr.engine: poe`). Sign in and enter your Poe API key + bot/model name on the **Settings** page, or set `POE_API_KEY`/`POE_MODEL` in Railway → service → **Variables** instead. Like the Gemini case above, a missing Poe key doesn't stop the worker or the other engines from running — it only fails jobs that select Poe.
+
+**Job fails with `OpenRouter OCR is not configured`:**
+Same as the Poe case above, but for the OpenRouter engine (Settings → Engine used for OCR, or `ocr.engine: openrouter`). Sign in and enter your OpenRouter API key + model slug on the **Settings** page, or set `OPENROUTER_API_KEY`/`OPENROUTER_MODEL` in Railway → service → **Variables** instead.
 
 **Job fails with `Daily Gemini quota reached`:**
 You've used all your free calls today. Wait until midnight Pacific Time (~UTC-7), or pause the job and resume tomorrow — cached pages will not be re-spent.

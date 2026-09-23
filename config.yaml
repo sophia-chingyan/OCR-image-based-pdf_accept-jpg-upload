@@ -1,9 +1,9 @@
 ocr:
-  # "gemini" (default) or "poe" — see Worker/engine_factory.py. This is only
-  # the FALLBACK default: the app's Settings page (sign in → Settings →
-  # "Engine used for OCR") lets the user pick either engine per job, at
-  # runtime, without a redeploy — that choice takes priority over this key
-  # whenever one is saved there.
+  # "gemini" (default), "poe", or "openrouter" — see Worker/engine_factory.py.
+  # This is only the FALLBACK default: the app's Settings page (sign in →
+  # Settings → "Engine used for OCR") lets the user pick any engine per
+  # job, at runtime, without a redeploy — that choice takes priority over
+  # this key whenever one is saved there.
   engine: gemini
   # Overridden by the GEMINI_MODEL environment variable when that is set,
   # so the model can be switched from the host's Variables UI.
@@ -16,7 +16,15 @@ ocr:
   # available in your Poe account, e.g. "Claude-Sonnet-4.5" — confirm the
   # exact name at https://poe.com.
   # poe_model_name: "Claude-Sonnet-4.5"
-  rpm_limit: 2000                # gemini paid-tier default; poe clamps this to its 500/min ceiling regardless
+  # OpenRouter model slug, only used when engine: openrouter, and only as
+  # the fallback default when the Settings page has no value saved — same
+  # precedence pattern as poe_model_name above (Settings page, then
+  # OPENROUTER_MODEL env var, then this key). OpenRouter also has no
+  # default model, so *some* source must name a vision-capable model slug,
+  # e.g. "anthropic/claude-sonnet-4.5" — confirm at
+  # https://openrouter.ai/models (filter for image input support).
+  # openrouter_model_name: "anthropic/claude-sonnet-4.5"
+  rpm_limit: 2000                # gemini paid-tier default; poe clamps this to its 500/min ceiling regardless; openrouter uses it as-is (see Worker/openrouter_engine.py — tune to your model's actual limit)
   rpd_limit: 10000                       # paid plan; lower to your free-tier RPD
   max_retries: 8                # was 5 — rides out longer 503 "high demand" spikes
   request_timeout_s: 180
@@ -24,8 +32,8 @@ ocr:
   dpi: 300
 
   # Optional backoff tuning for transient errors (429 / 5xx), shared by
-  # both the gemini and poe engines. OPTIONAL — uncomment to override the
-  # defaults shown below.
+  # the gemini, poe, and openrouter engines. OPTIONAL — uncomment to
+  # override the defaults shown below.
   # retry_backoff_base_s: 4.0   # first-retry base wait, seconds
   # retry_backoff_cap_s: 120.0  # maximum single backoff wait, seconds
 
