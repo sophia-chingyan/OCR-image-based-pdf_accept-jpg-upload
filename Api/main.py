@@ -23,6 +23,7 @@ from store import get_async_redis
 from settings import (
     CONFIG_PATH, UPLOAD_DIR, OUTPUT_DIR, TMPWORK_DIR,
     ensure_dirs, public_base_url, require_env, gemini_model, poe_model,
+    openrouter_model,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -33,12 +34,13 @@ MAX_UPLOAD_BYTES = CFG["pipeline"]["max_pdf_size_mb"] * 1024 * 1024
 OCR_ENGINE = CFG["ocr"].get("engine", "gemini").lower()  # config.yaml's default, overridable per-job — see _effective_ocr_engine
 GEMINI_MODEL = gemini_model(CFG["ocr"].get("model_name"))
 POE_MODEL = poe_model(CFG["ocr"].get("poe_model_name"))
+OPENROUTER_MODEL = openrouter_model(CFG["ocr"].get("openrouter_model_name"))
 IMAGE_EXTENSIONS = (".jpg", ".jpeg")
 # Kept in sync by hand with Worker/engine_factory.py's ENGINES dict — not
 # imported directly because that module (and the ones it imports) rely on
 # Worker/ being on sys.path, which only happens once Worker.worker is first
 # imported (inside lifespan(), i.e. after this module has already loaded).
-VALID_OCR_ENGINES = ("gemini", "poe")
+VALID_OCR_ENGINES = ("gemini", "poe", "openrouter")
 ensure_dirs()
 
 require_env("SECRET_KEY", "ALLOWED_EMAIL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
@@ -674,10 +676,12 @@ async def health():
         # static config.yaml value if Redis is unreachable.
         "ocr_engine": effective_engine,
         # Which model/bot this deploy is actually using for OCR, so a
-        # GEMINI_MODEL / POE_MODEL change can be confirmed without reading
-        # the logs. Only the field matching ocr_engine is actually in use.
+        # GEMINI_MODEL / POE_MODEL / OPENROUTER_MODEL change can be
+        # confirmed without reading the logs. Only the field matching
+        # ocr_engine is actually in use.
         "gemini_model": GEMINI_MODEL,
         "poe_model": POE_MODEL,
+        "openrouter_model": OPENROUTER_MODEL,
     }
 
 @app.get("/api/config")
@@ -686,15 +690,17 @@ async def get_config():
         "max_pdf_size_mb": CFG["pipeline"]["max_pdf_size_mb"],
     })
 
-# ── User-provided OCR engine choice + Poe settings ───────────────────────────
+# ── User-provided OCR engine choice + Poe/OpenRouter settings ────────────────
 # Lets the logged-in user pick which OCR engine runs (instead of only
-# config.yaml's ocr.engine) and supply their own POE_API_KEY / POE_MODEL at
-# runtime (Settings page) instead of only via environment variables. Stored
-# in Redis so both the API and the worker thread see the same values
+# config.yaml's ocr.engine) and supply their own API key / model for
+# whichever hosted-model engine (Poe, OpenRouter) they pick at runtime
+# (Settings page) instead of only via environment variables. Stored in
+# Redis so both the API and the worker thread see the same values
 # (store.py shares one connection/FakeServer between them). The worker
 # re-resolves the engine choice at the start of each job
-# (Worker.worker._resolve_engine_name) and refreshes Poe credentials via
-# PoeOCREngine.refresh_runtime_settings() — see Worker/poe_engine.py.
+# (Worker.worker._resolve_engine_name) and refreshes credentials via
+# refresh_runtime_settings() — see Worker/poe_engine.py /
+# Worker/openrouter_engine.py.
 #
 # NOTE: without REDIS_URL (the default), this lives in the in-process
 # fakeredis store and is lost on restart/redeploy, same as job history —
@@ -703,9 +709,14 @@ async def _effective_ocr_engine(r) -> str:
     saved = (await r.get("settings:ocr_engine") or "").strip().lower()
     return saved if saved in VALID_OCR_ENGINES else OCR_ENGINE
 
+def _preview(secret: str) -> str:
+    return f"····{secret[-4:]}" if len(secret) >= 4 else ("····" if secret else "")
+
 async def _settings_payload(r) -> dict:
-    api_key = (await r.get("settings:poe_api_key") or "").strip()
-    model   = (await r.get("settings:poe_model") or "").strip()
+    poe_api_key        = (await r.get("settings:poe_api_key") or "").strip()
+    poe_model_saved     = (await r.get("settings:poe_model") or "").strip()
+    openrouter_api_key  = (await r.get("settings:openrouter_api_key") or "").strip()
+    openrouter_model_saved = (await r.get("settings:openrouter_model") or "").strip()
     saved_engine = (await r.get("settings:ocr_engine") or "").strip().lower()
     if saved_engine not in VALID_OCR_ENGINES:
         saved_engine = ""
@@ -719,11 +730,16 @@ async def _settings_payload(r) -> dict:
         "ocr_engine_saved": saved_engine,
         "ocr_engine_default": OCR_ENGINE,
         "ocr_engines_available": list(VALID_OCR_ENGINES),
-        "poe_api_key_set": bool(api_key),
-        "poe_api_key_preview": (f"····{api_key[-4:]}" if len(api_key) >= 4 else ("····" if api_key else "")),
-        "poe_model": model,
+        "poe_api_key_set": bool(poe_api_key),
+        "poe_api_key_preview": _preview(poe_api_key),
+        "poe_model": poe_model_saved,
         # What PoeOCREngine falls back to when no value is saved here.
         "poe_model_env_default": POE_MODEL or None,
+        "openrouter_api_key_set": bool(openrouter_api_key),
+        "openrouter_api_key_preview": _preview(openrouter_api_key),
+        "openrouter_model": openrouter_model_saved,
+        # What OpenRouterOCREngine falls back to when no value is saved here.
+        "openrouter_model_env_default": OPENROUTER_MODEL or None,
     }
 
 @app.get("/api/settings")
@@ -772,6 +788,20 @@ async def save_settings(request: Request, user: str = Depends(require_auth)):
                 await r.set("settings:poe_api_key", key)
             else:
                 await r.delete("settings:poe_api_key")
+
+        if "openrouter_model" in body:
+            model = str(body.get("openrouter_model") or "").strip()
+            if model:
+                await r.set("settings:openrouter_model", model)
+            else:
+                await r.delete("settings:openrouter_model")
+
+        if "openrouter_api_key" in body:
+            key = str(body.get("openrouter_api_key") or "").strip()
+            if key:
+                await r.set("settings:openrouter_api_key", key)
+            else:
+                await r.delete("settings:openrouter_api_key")
 
         return JSONResponse(await _settings_payload(r))
     finally:

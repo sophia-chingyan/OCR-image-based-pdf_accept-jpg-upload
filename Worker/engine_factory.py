@@ -3,11 +3,12 @@ Engine Factory
 ==============
 Returns the configured OCR engine instance.
 
-Currently supported engines: gemini (default), poe. Which one actually
-runs a given job is resolved per job by Worker/worker.py — from the
-Settings page (settings:ocr_engine in Redis) if set, else ocr.engine in
+Currently supported engines: gemini (default), poe, openrouter. Which one
+actually runs a given job is resolved per job by Worker/worker.py — from
+the Settings page (settings:ocr_engine in Redis) if set, else ocr.engine in
 config.yaml — not fixed once at worker startup. See
-PoeOCREngine/GeminiOCREngine docstrings for per-engine credential handling.
+PoeOCREngine/OpenRouterOCREngine/GeminiOCREngine docstrings for per-engine
+credential handling.
 
 To add a new engine in the future:
 1. Implement OCREngine in a new file (e.g. claude_vision_engine.py)
@@ -33,13 +34,19 @@ def _load_poe(config: dict) -> OCREngine:
     return PoeOCREngine(config)
 
 
+def _load_openrouter(config: dict) -> OCREngine:
+    from openrouter_engine import OpenRouterOCREngine
+    return OpenRouterOCREngine(config)
+
+
 # Exposed at module level (not just inside get_engine) so callers — e.g.
 # worker.py resolving the Settings-page engine choice, or Api/main.py
 # validating a POST body — can enumerate valid engine names without
 # duplicating this list.
 ENGINES = {
-    "gemini": _load_gemini,
-    "poe":    _load_poe,
+    "gemini":     _load_gemini,
+    "poe":        _load_poe,
+    "openrouter": _load_openrouter,
 }
 
 
