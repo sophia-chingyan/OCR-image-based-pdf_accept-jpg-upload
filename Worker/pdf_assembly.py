@@ -162,9 +162,6 @@ def _assemble_clean_pdf_reportlab(
     s_h3    = _style("H3","Heading3",fontSize=12, leading=17, spaceBefore=8,  spaceAfter=4)
     s_body  = _style("B", fontSize=11, leading=18, firstLineIndent=22,
                      spaceBefore=2, spaceAfter=2, alignment=TA_JUSTIFY)
-    # Rest of a paragraph that began on the previous source page — no
-    # first-line indent, so it doesn't read as a new paragraph.
-    s_cont  = _style("BC", "B", firstLineIndent=0)
     s_fn    = _style("FN",fontSize=9,  leading=13, textColor="#555555")
     s_pn    = _style("PN",fontSize=9,  leading=12, textColor="#888888", alignment=TA_CENTER)
     s_cap   = _style("C", fontSize=10, leading=14, textColor="#666666", alignment=TA_CENTER)
@@ -228,7 +225,7 @@ def _assemble_clean_pdf_reportlab(
                     elif el.element_type == "paragraph":
                         if el.href:
                             safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
-                        text_items.append(Paragraph(safe, s_cont if el.continued else s_body))
+                        text_items.append(Paragraph(safe, s_body))
                     elif el.element_type == "list-item":
                         bullet_safe = f"\u2022 {safe}"
                         if el.href:
@@ -430,7 +427,7 @@ def _wrap_text_fitz(text: str, font, fontsize: float, max_width: float) -> List[
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Clean-PDF text preparation: join visual lines, stitch cross-page paragraphs
+# Clean-PDF text preparation: join each block's visual lines
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -440,17 +437,6 @@ class _CleanItem:
     text: str
     level: int = 1
     href: Optional[str] = None
-    continued: bool = False  # tail of a paragraph begun on the previous page
-
-
-# Characters that end a sentence. A paragraph whose text ends with none of
-# these at the bottom of a page continues on the next page.
-_SENTENCE_END = set("。！？!?…；;：:.")
-# Closing quotes/brackets that may follow a sentence-ending character.
-_CLOSERS = set("」』”’）)】〉》\"'")
-# Elements that sit between the body text of two pages and are skipped when
-# looking for the paragraph that runs across the page break.
-_MARGIN_TYPES = ("page-number", "footnote")
 
 
 def _is_cjk(ch: str) -> bool:
@@ -479,41 +465,14 @@ def _join_visual_lines(text: str) -> str:
     return out
 
 
-def _ends_sentence(text: str) -> bool:
-    t = text.rstrip()
-    while t and t[-1] in _CLOSERS:
-        t = t[:-1]
-    return bool(t) and t[-1] in _SENTENCE_END
-
-
-def _first_sentence_end(text: str) -> int:
-    """Index just past the first sentence end (and its closing quotes), or -1."""
-    for i, ch in enumerate(text):
-        if ch in _SENTENCE_END:
-            j = i + 1
-            while j < len(text) and (text[j] in _SENTENCE_END or text[j] in _CLOSERS):
-                j += 1
-            return j
-    return -1
-
-
 def _prepare_clean_text(pages: List[StructuredPage]) -> List[List[_CleanItem]]:
     """
-    Build the per-page text items for the clean PDF.
-
-    The clean PDF puts each source page's text on its own page, right after
-    that page's scan. A paragraph that runs across a page break used to be
-    cut in two there: the sentence split mid-way, the scan of the next page
-    sat between the halves, and the second half was indented as if it were a
-    new paragraph. Now the unfinished sentence is completed on the page where
-    it starts (the next page's text up to its first sentence end is moved
-    back), and whatever remains of that paragraph is marked `continued` so it
-    is typeset without a first-line indent.
+    Build the per-page text items for the clean PDF. Each source page's OCR
+    text stays on its own text page (right after that page's scan), in the
+    order the OCR returned it — the same text the searchable PDF overlays on
+    that page; nothing is moved between pages.
     """
     result: List[List[_CleanItem]] = []
-    open_para: Optional[_CleanItem] = None  # unfinished paragraph from the previous page
-    prev_pno: Optional[int] = None
-
     for page in pages:
         items: List[_CleanItem] = []
         for el in page.elements:
@@ -526,33 +485,7 @@ def _prepare_clean_text(pages: List[StructuredPage]) -> List[List[_CleanItem]]:
                 level=el.level,
                 href=el.href,
             ))
-
-        # A page skipped by OCR breaks the chain — don't stitch across it.
-        if open_para is not None and prev_pno is not None and page.page_number == prev_pno + 1:
-            first = next((it for it in items if it.element_type not in _MARGIN_TYPES), None)
-            if first is not None and first.element_type == "paragraph" and not first.href:
-                cut = _first_sentence_end(first.text)
-                if cut < 0:
-                    cut = len(first.text)
-                open_para.text += first.text[:cut]
-                rest = first.text[cut:].lstrip()
-                if rest:
-                    first.text = rest
-                    first.continued = True
-                else:
-                    items.remove(first)
-
         result.append(items)
-
-        # Remember this page's last body paragraph if it is left unfinished.
-        last = next((it for it in reversed(items) if it.element_type not in _MARGIN_TYPES), None)
-        if last is not None and last.element_type == "paragraph" and not last.href \
-                and not _ends_sentence(last.text):
-            open_para = last
-        elif last is not None or not page.is_image_only:
-            open_para = None
-        prev_pno = page.page_number
-
     return result
 
 
