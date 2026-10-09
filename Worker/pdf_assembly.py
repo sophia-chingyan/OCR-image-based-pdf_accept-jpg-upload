@@ -28,6 +28,7 @@ import re
 import shutil
 import logging
 from pathlib import Path
+from dataclasses import dataclass
 from typing import List, Optional
 
 import fitz  # PyMuPDF
@@ -161,6 +162,9 @@ def _assemble_clean_pdf_reportlab(
     s_h3    = _style("H3","Heading3",fontSize=12, leading=17, spaceBefore=8,  spaceAfter=4)
     s_body  = _style("B", fontSize=11, leading=18, firstLineIndent=22,
                      spaceBefore=2, spaceAfter=2, alignment=TA_JUSTIFY)
+    # Rest of a paragraph that began on the previous source page — no
+    # first-line indent, so it doesn't read as a new paragraph.
+    s_cont  = _style("BC", "B", firstLineIndent=0)
     s_fn    = _style("FN",fontSize=9,  leading=13, textColor="#555555")
     s_pn    = _style("PN",fontSize=9,  leading=12, textColor="#888888", alignment=TA_CENTER)
     s_cap   = _style("C", fontSize=10, leading=14, textColor="#666666", alignment=TA_CENTER)
@@ -195,8 +199,9 @@ def _assemble_clean_pdf_reportlab(
                 story.append(Paragraph(_esc(structure.author), s_auth))
 
         has_any_page = False
+        page_items = _prepare_clean_text(structure.pages)
 
-        for page in structure.pages:
+        for page, items in zip(structure.pages, page_items):
             pno = page.page_number
 
             # ── 1. Original scan page ────────────────────────────────────────
@@ -212,10 +217,8 @@ def _assemble_clean_pdf_reportlab(
 
             # ── 2. OCR text-only page ────────────────────────────────────────
             text_items: list = []
-            for el in page.elements:
-                t = el.text.strip()
-                if not t:
-                    continue
+            for el in items:
+                t = el.text
                 safe = _esc(t)
                 try:
                     if el.element_type == "heading":
@@ -225,7 +228,7 @@ def _assemble_clean_pdf_reportlab(
                     elif el.element_type == "paragraph":
                         if el.href:
                             safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
-                        text_items.append(Paragraph(safe, s_body))
+                        text_items.append(Paragraph(safe, s_cont if el.continued else s_body))
                     elif el.element_type == "list-item":
                         bullet_safe = f"\u2022 {safe}"
                         if el.href:
@@ -319,8 +322,9 @@ def _assemble_clean_pdf_pymupdf(
 
     try:
         has_any_content = False
+        page_items = _prepare_clean_text(structure.pages)
 
-        for struct_page in structure.pages:
+        for struct_page, text_elements in zip(structure.pages, page_items):
             pno = struct_page.page_number
 
             # ── 1. Original scan page ────────────────────────────────────────
@@ -335,7 +339,6 @@ def _assemble_clean_pdf_pymupdf(
                         logger.warning(f"PyMuPDF: could not insert scan image for page {pno}: {e}")
 
             # ── 2. OCR text-only page ────────────────────────────────────────
-            text_elements = [el for el in struct_page.elements if el.text.strip()]
             if not text_elements:
                 continue
 
@@ -345,7 +348,7 @@ def _assemble_clean_pdf_pymupdf(
             max_width   = 495.0
 
             for el in text_elements:
-                text = el.text.strip()
+                text = el.text
 
                 if el.element_type == "heading":
                     fs = 16 if el.level == 1 else 14 if el.level == 2 else 12
@@ -424,6 +427,133 @@ def _wrap_text_fitz(text: str, font, fontsize: float, max_width: float) -> List[
         if current:
             lines.append(current)
     return lines if lines else [""]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clean-PDF text preparation: join visual lines, stitch cross-page paragraphs
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class _CleanItem:
+    """One typeset element on a clean-PDF text page."""
+    element_type: str
+    text: str
+    level: int = 1
+    href: Optional[str] = None
+    continued: bool = False  # tail of a paragraph begun on the previous page
+
+
+# Characters that end a sentence. A paragraph whose text ends with none of
+# these at the bottom of a page continues on the next page.
+_SENTENCE_END = set("。！？!?…；;：:.")
+# Closing quotes/brackets that may follow a sentence-ending character.
+_CLOSERS = set("」』”’）)】〉》\"'")
+# Elements that sit between the body text of two pages and are skipped when
+# looking for the paragraph that runs across the page break.
+_MARGIN_TYPES = ("page-number", "footnote")
+
+
+def _is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return (0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF
+            or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF
+            or 0x20000 <= o <= 0x2FA1F)
+
+
+def _join_visual_lines(text: str) -> str:
+    """
+    Join the visual lines (rows, or columns in vertical text) of one OCR
+    block into continuous text. The OCR keeps the page's line breaks, but in
+    the reflowed clean PDF they are just line-wrap points: rendered as-is
+    they become stray spaces between CJK characters (ReportLab) or short
+    broken lines (PyMuPDF). A space is kept only between two non-CJK words.
+    """
+    parts = [ln.strip() for ln in text.split("\n")]
+    out = ""
+    for part in parts:
+        if not part:
+            continue
+        if out and not _is_cjk(out[-1]) and not _is_cjk(part[0]):
+            out += " "
+        out += part
+    return out
+
+
+def _ends_sentence(text: str) -> bool:
+    t = text.rstrip()
+    while t and t[-1] in _CLOSERS:
+        t = t[:-1]
+    return bool(t) and t[-1] in _SENTENCE_END
+
+
+def _first_sentence_end(text: str) -> int:
+    """Index just past the first sentence end (and its closing quotes), or -1."""
+    for i, ch in enumerate(text):
+        if ch in _SENTENCE_END:
+            j = i + 1
+            while j < len(text) and (text[j] in _SENTENCE_END or text[j] in _CLOSERS):
+                j += 1
+            return j
+    return -1
+
+
+def _prepare_clean_text(pages: List[StructuredPage]) -> List[List[_CleanItem]]:
+    """
+    Build the per-page text items for the clean PDF.
+
+    The clean PDF puts each source page's text on its own page, right after
+    that page's scan. A paragraph that runs across a page break used to be
+    cut in two there: the sentence split mid-way, the scan of the next page
+    sat between the halves, and the second half was indented as if it were a
+    new paragraph. Now the unfinished sentence is completed on the page where
+    it starts (the next page's text up to its first sentence end is moved
+    back), and whatever remains of that paragraph is marked `continued` so it
+    is typeset without a first-line indent.
+    """
+    result: List[List[_CleanItem]] = []
+    open_para: Optional[_CleanItem] = None  # unfinished paragraph from the previous page
+    prev_pno: Optional[int] = None
+
+    for page in pages:
+        items: List[_CleanItem] = []
+        for el in page.elements:
+            text = _join_visual_lines(el.text or "")
+            if not text:
+                continue
+            items.append(_CleanItem(
+                element_type=el.element_type,
+                text=text,
+                level=el.level,
+                href=el.href,
+            ))
+
+        # A page skipped by OCR breaks the chain — don't stitch across it.
+        if open_para is not None and prev_pno is not None and page.page_number == prev_pno + 1:
+            first = next((it for it in items if it.element_type not in _MARGIN_TYPES), None)
+            if first is not None and first.element_type == "paragraph" and not first.href:
+                cut = _first_sentence_end(first.text)
+                if cut < 0:
+                    cut = len(first.text)
+                open_para.text += first.text[:cut]
+                rest = first.text[cut:].lstrip()
+                if rest:
+                    first.text = rest
+                    first.continued = True
+                else:
+                    items.remove(first)
+
+        result.append(items)
+
+        # Remember this page's last body paragraph if it is left unfinished.
+        last = next((it for it in reversed(items) if it.element_type not in _MARGIN_TYPES), None)
+        if last is not None and last.element_type == "paragraph" and not last.href \
+                and not _ends_sentence(last.text):
+            open_para = last
+        elif last is not None or not page.is_image_only:
+            open_para = None
+        prev_pno = page.page_number
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
