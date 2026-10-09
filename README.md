@@ -6,7 +6,7 @@ Self-hosted, single-user web app that converts **image-based PDF files and JPG i
 - ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default, switchable with the `GEMINI_MODEL` variable) — or via **Poe** or **OpenRouter** (any vision-capable model either routes to: Claude, GPT, Gemini, …), selectable per job from the app's **Settings** page (or `ocr.engine` in `config.yaml` as the fallback default)
 - ✅ Languages: Traditional Chinese, Simplified Chinese, Japanese, Korean, English (and 100+ others)
 - ✅ Auto-detects horizontal / vertical text layout per page
-- ✅ Clean PDF with correct CJK font/CMap per detected language
+- ✅ Clean and searchable PDFs embed their fonts, with per-character fallback so text in any script (CJK, Latin, Cyrillic, Thai, …) renders, copies and searches correctly
 - ✅ Re-embeds images, preserves hyperlinks, headings, TOC, footnotes, page numbers
 - ✅ Async job queue with Start / Pause / Stop / Delete / Retry controls
 - ✅ Google OAuth2 authentication (single-user, allowlist by email)

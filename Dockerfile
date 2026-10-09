@@ -7,9 +7,16 @@ ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-# System dependencies for OpenCV, PyMuPDF, and health-check curl
+# System dependencies for OpenCV, PyMuPDF, and health-check curl, plus the
+# TrueType fonts embedded into output PDFs (Worker/fonts.py): AR PL UMing
+# (Chinese, 明體), WenQuanYi Zen Hei (Chinese/Japanese/Korean) and Noto
+# (every other script — Latin, Cyrillic, Greek, Thai, Arabic, Hebrew,
+# Devanagari, …).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    fonts-arphic-uming \
+    fonts-wqy-zenhei \
+    fonts-noto-core \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
