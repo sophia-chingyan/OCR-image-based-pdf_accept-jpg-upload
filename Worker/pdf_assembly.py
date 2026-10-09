@@ -15,11 +15,16 @@ Searchable PDF (方案 B) — assemble_searchable_pdf()
    Per-line bboxes (horizontal) and per-character-column distribution
    (vertical CJK) give tight selection alignment.
 
-Font selection:
-- Traditional Chinese → MSung-Light (ReportLab) / china-t (PyMuPDF)
-- Simplified Chinese  → STSong-Light / china-s
-- Japanese            → HeiseiMin-W3 / japan
-- Korean              → HYSMyeongJo-Medium / korea
+Font selection (see fonts.py):
+Every renderer uses an embedded font *chain* and picks, per character, the
+first font that has the glyph, so text in any script renders and stays
+copyable/searchable. The chain's head follows the dominant language:
+- Traditional Chinese → AR PL UMing TW (ReportLab) / china-t (PyMuPDF)
+- Simplified Chinese  → AR PL UMing CN / china-s
+- Japanese            → WenQuanYi Zen Hei / japan
+- Korean              → WenQuanYi Zen Hei / korea
+- anything else       → Noto Serif / china-t
+followed by the Noto fonts for every other script.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from typing import List, Optional
 
 import fitz  # PyMuPDF
 
+from fonts import FitzFontChain, ReportLabFontChain
 from structure_analysis import DocumentStructure, StructuredPage
 
 logger = logging.getLogger(__name__)
@@ -57,25 +63,8 @@ def _get_fitz_font_name(language: str) -> str:
     return result
 
 
-def _register_best_font(pdfmetrics, UnicodeCIDFont, language: str = "ch_tra") -> str:
-    if language == "ch_sim":
-        candidates = ["STSong-Light", "MSung-Light", "HeiseiMin-W3", "HYSMyeongJo-Medium"]
-    elif language == "japan":
-        candidates = ["HeiseiMin-W3", "MSung-Light", "STSong-Light", "HYSMyeongJo-Medium"]
-    elif language == "korean":
-        candidates = ["HYSMyeongJo-Medium", "MSung-Light", "STSong-Light", "HeiseiMin-W3"]
-    else:
-        candidates = ["MSung-Light", "STSong-Light", "HeiseiMin-W3", "HYSMyeongJo-Medium"]
-
-    for fname in candidates:
-        try:
-            pdfmetrics.registerFont(UnicodeCIDFont(fname))
-            logger.info(f"ReportLab CID font registered: {fname} (language={language})")
-            return fname
-        except Exception:
-            continue
-    logger.warning(f"No CJK CID font registered for language={language}, falling back to Helvetica")
-    return "Helvetica"
+def _fitz_font_chain(language: str) -> FitzFontChain:
+    return FitzFontChain(_get_fitz_font_name(language), language)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,18 +132,21 @@ def _assemble_clean_pdf_reportlab(
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as RLImage,
     )
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 
-    cjk_font = _register_best_font(pdfmetrics, UnicodeCIDFont,
-                                    language=structure.dominant_language)
-    logger.info(f"Clean PDF using font: {cjk_font}")
+    # Embedded TrueType fonts with per-character fallback. Raises when no
+    # font files exist, which sends assemble_clean_pdf to the PyMuPDF path.
+    chain = ReportLabFontChain(structure.dominant_language)
+    body_font = chain.primary
+    logger.info(f"Clean PDF using font chain of {len(chain.specs)} font(s)")
+
+    def _mk(text: str) -> str:
+        return chain.markup(text, _esc)
 
     styles = getSampleStyleSheet()
 
     def _style(name, parent_name="Normal", **kw):
         parent = styles.get(parent_name, styles["Normal"])
-        return ParagraphStyle(name, parent=parent, fontName=cjk_font, **kw)
+        return ParagraphStyle(name, parent=parent, fontName=body_font, **kw)
 
     s_title = _style("T", "Title",   fontSize=18, leading=24, spaceAfter=12, alignment=TA_CENTER)
     s_h1    = _style("H1","Heading1",fontSize=16, leading=22, spaceBefore=14, spaceAfter=8)
@@ -190,10 +182,10 @@ def _assemble_clean_pdf_reportlab(
         # ── Title page ───────────────────────────────────────────────────────
         if structure.title:
             story.append(Spacer(1, 40 * mm))
-            story.append(Paragraph(_esc(structure.title), s_title))
+            story.append(Paragraph(_mk(structure.title), s_title))
             if structure.author:
                 story.append(Spacer(1, 5 * mm))
-                story.append(Paragraph(_esc(structure.author), s_auth))
+                story.append(Paragraph(_mk(structure.author), s_auth))
 
         has_any_page = False
         page_items = _prepare_clean_text(structure.pages)
@@ -216,7 +208,7 @@ def _assemble_clean_pdf_reportlab(
             text_items: list = []
             for el in items:
                 t = el.text
-                safe = _esc(t)
+                safe = _mk(t)
                 try:
                     if el.element_type == "heading":
                         if el.href:
@@ -227,7 +219,7 @@ def _assemble_clean_pdf_reportlab(
                             safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
                         text_items.append(Paragraph(safe, s_body))
                     elif el.element_type == "list-item":
-                        bullet_safe = f"\u2022 {safe}"
+                        bullet_safe = _mk(f"\u2022 {t}")
                         if el.href:
                             bullet_safe = f'<a href="{_esc(el.href)}" color="blue">{bullet_safe}</a>'
                         text_items.append(Paragraph(bullet_safe, s_li))
@@ -256,7 +248,7 @@ def _assemble_clean_pdf_reportlab(
             ))
 
         if not story:
-            story.append(Paragraph(_esc(structure.title or "Untitled"), s_title))
+            story.append(Paragraph(_mk(structure.title or "Untitled"), s_title))
             story.append(Spacer(1, 10 * mm))
             story.append(Paragraph(
                 "[ No text content could be extracted from this PDF ]", s_body
@@ -290,8 +282,7 @@ def _assemble_clean_pdf_pymupdf(
     Emits: title page → for each source page: scan page (300 DPI) + text-only page.
     """
     doc = fitz.open()
-    fitz_font_name = _get_fitz_font_name(structure.dominant_language)
-    font = fitz.Font(fitz_font_name)
+    font = _fitz_font_chain(structure.dominant_language)
 
     title  = structure.title or "Untitled"
     author = structure.author or ""
@@ -300,9 +291,9 @@ def _assemble_clean_pdf_pymupdf(
     title_page = doc.new_page(width=595, height=842)
     try:
         tw = fitz.TextWriter(title_page.rect)
-        tw.append(pos=(72, 200), text=title[:100], font=font, fontsize=20)
+        font.append(tw, (72, 200), title[:100], 20)
         if author:
-            tw.append(pos=(72, 240), text=author[:100], font=font, fontsize=14)
+            font.append(tw, (72, 240), author[:100], 14)
         tw.write_text(title_page)
     except Exception:
         title_page.insert_text((72, 200), title[:100], fontsize=20)
@@ -366,8 +357,7 @@ def _assemble_clean_pdf_pymupdf(
                         y_cursor = 60.0
                     try:
                         tw = fitz.TextWriter(text_page.rect)
-                        tw.append(pos=(margin_left, y_cursor), text=line,
-                                  font=font, fontsize=fs)
+                        font.append(tw, (margin_left, y_cursor), line, fs)
                         tw.write_text(text_page)
                     except Exception:
                         try:
@@ -383,9 +373,8 @@ def _assemble_clean_pdf_pymupdf(
             fallback_page = doc[0]
             try:
                 tw = fitz.TextWriter(fallback_page.rect)
-                tw.append(pos=(72, 300),
-                          text="[ No text content could be extracted ]",
-                          font=font, fontsize=12)
+                font.append(tw, (72, 300),
+                            "[ No text content could be extracted ]", 12)
                 tw.write_text(fallback_page)
             except Exception:
                 fallback_page.insert_text((72, 300),
@@ -410,17 +399,18 @@ def _wrap_text_fitz(text: str, font, fontsize: float, max_width: float) -> List[
             lines.append("")
             continue
         current = ""
+        width = 0.0
         for char in raw_line:
-            test = current + char
             try:
-                w = font.text_length(test, fontsize=fontsize)
+                cw = font.text_length(char, fontsize=fontsize)
             except Exception:
-                w = len(test) * fontsize * 0.6
-            if w > max_width and current:
+                cw = fontsize * 0.6
+            if width + cw > max_width and current:
                 lines.append(current)
-                current = char
+                current, width = char, cw
             else:
-                current = test
+                current += char
+                width += cw
         if current:
             lines.append(current)
     return lines if lines else [""]
@@ -545,10 +535,7 @@ def _assemble_searchable_pdf_impl(
 ) -> None:
     doc = fitz.open(str(source_pdf_path))
 
-    try:
-        font = fitz.Font(_get_fitz_font_name(structure.dominant_language))
-    except Exception:
-        font = fitz.Font("china-t")
+    font = _fitz_font_chain(structure.dominant_language)
 
     px_to_pt  = 72.0 / float(dpi if dpi else 400)
     page_map  = {p.page_number: p for p in structure.pages}
@@ -637,7 +624,7 @@ def _overlay_horizontal_line(page, rect, text: str, font) -> bool:
         # Baseline slightly above the box bottom edge.
         baseline = rect.y1 - rect.height * 0.18
         tw = fitz.TextWriter(page.rect)
-        tw.append(pos=(rect.x0, baseline), text=text, font=font, fontsize=fs)
+        font.append(tw, (rect.x0, baseline), text, fs)
         tw.write_text(page, render_mode=3)   # invisible but selectable
         return True
     except Exception as e:
@@ -664,7 +651,7 @@ def _overlay_vertical_line(page, rect, text: str, font) -> bool:
         for c in chars:
             if y > page.rect.y1:
                 break
-            tw.append(pos=(x, y), text=c, font=font, fontsize=fs)
+            tw.append(pos=(x, y), text=c, font=font.font_for(c), fontsize=fs)
             y += step
         tw.write_text(page, render_mode=3)
         return True
@@ -699,7 +686,7 @@ def _overlay_invisible_text(page, rect, text: str, font) -> bool:
                 continue
             if y > page.rect.y1:
                 break
-            tw.append(pos=(rect.x0, y), text=line, font=font, fontsize=fs)
+            font.append(tw, (rect.x0, y), line, fs)
             y += fs * line_factor
 
         tw.write_text(page, render_mode=3)

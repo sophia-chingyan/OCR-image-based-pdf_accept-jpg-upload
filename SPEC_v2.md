@@ -243,7 +243,7 @@ The single output format is a clean, re-typeset PDF produced from one OCR pass.
 
 **Step 5 — Assemble Clean PDF (`pdf_assembly.py → assemble_clean_pdf`)**
 - Re-typesets all OCR text into a new A4 PDF using ReportLab
-- Registers CJK font (`STSong-Light` or `MSung-Light`, falls back to `Helvetica`)
+- Embeds TrueType fonts with per-character fallback (`Worker/fonts.py`): AR PL UMing / WenQuanYi Zen Hei for CJK, Noto for every other script
 - Maps element types to ReportLab styles: headings, body, footnotes, captions, list items
 - Images embedded inline where detected
 - Full title page generated from PDF metadata
