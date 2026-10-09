@@ -28,6 +28,7 @@ import re
 import shutil
 import logging
 from pathlib import Path
+from dataclasses import dataclass
 from typing import List, Optional
 
 import fitz  # PyMuPDF
@@ -195,8 +196,9 @@ def _assemble_clean_pdf_reportlab(
                 story.append(Paragraph(_esc(structure.author), s_auth))
 
         has_any_page = False
+        page_items = _prepare_clean_text(structure.pages)
 
-        for page in structure.pages:
+        for page, items in zip(structure.pages, page_items):
             pno = page.page_number
 
             # ── 1. Original scan page ────────────────────────────────────────
@@ -212,10 +214,8 @@ def _assemble_clean_pdf_reportlab(
 
             # ── 2. OCR text-only page ────────────────────────────────────────
             text_items: list = []
-            for el in page.elements:
-                t = el.text.strip()
-                if not t:
-                    continue
+            for el in items:
+                t = el.text
                 safe = _esc(t)
                 try:
                     if el.element_type == "heading":
@@ -319,8 +319,9 @@ def _assemble_clean_pdf_pymupdf(
 
     try:
         has_any_content = False
+        page_items = _prepare_clean_text(structure.pages)
 
-        for struct_page in structure.pages:
+        for struct_page, text_elements in zip(structure.pages, page_items):
             pno = struct_page.page_number
 
             # ── 1. Original scan page ────────────────────────────────────────
@@ -335,7 +336,6 @@ def _assemble_clean_pdf_pymupdf(
                         logger.warning(f"PyMuPDF: could not insert scan image for page {pno}: {e}")
 
             # ── 2. OCR text-only page ────────────────────────────────────────
-            text_elements = [el for el in struct_page.elements if el.text.strip()]
             if not text_elements:
                 continue
 
@@ -345,7 +345,7 @@ def _assemble_clean_pdf_pymupdf(
             max_width   = 495.0
 
             for el in text_elements:
-                text = el.text.strip()
+                text = el.text
 
                 if el.element_type == "heading":
                     fs = 16 if el.level == 1 else 14 if el.level == 2 else 12
@@ -424,6 +424,69 @@ def _wrap_text_fitz(text: str, font, fontsize: float, max_width: float) -> List[
         if current:
             lines.append(current)
     return lines if lines else [""]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clean-PDF text preparation: join each block's visual lines
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class _CleanItem:
+    """One typeset element on a clean-PDF text page."""
+    element_type: str
+    text: str
+    level: int = 1
+    href: Optional[str] = None
+
+
+def _is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return (0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF
+            or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF
+            or 0x20000 <= o <= 0x2FA1F)
+
+
+def _join_visual_lines(text: str) -> str:
+    """
+    Join the visual lines (rows, or columns in vertical text) of one OCR
+    block into continuous text. The OCR keeps the page's line breaks, but in
+    the reflowed clean PDF they are just line-wrap points: rendered as-is
+    they become stray spaces between CJK characters (ReportLab) or short
+    broken lines (PyMuPDF). A space is kept only between two non-CJK words.
+    """
+    parts = [ln.strip() for ln in text.split("\n")]
+    out = ""
+    for part in parts:
+        if not part:
+            continue
+        if out and not _is_cjk(out[-1]) and not _is_cjk(part[0]):
+            out += " "
+        out += part
+    return out
+
+
+def _prepare_clean_text(pages: List[StructuredPage]) -> List[List[_CleanItem]]:
+    """
+    Build the per-page text items for the clean PDF. Each source page's OCR
+    text stays on its own text page (right after that page's scan), in the
+    order the OCR returned it — the same text the searchable PDF overlays on
+    that page; nothing is moved between pages.
+    """
+    result: List[List[_CleanItem]] = []
+    for page in pages:
+        items: List[_CleanItem] = []
+        for el in page.elements:
+            text = _join_visual_lines(el.text or "")
+            if not text:
+                continue
+            items.append(_CleanItem(
+                element_type=el.element_type,
+                text=text,
+                level=el.level,
+                href=el.href,
+            ))
+        result.append(items)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
