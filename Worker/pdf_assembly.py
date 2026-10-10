@@ -4,9 +4,12 @@ PDF Assembly
 Two output modes:
 
 Clean PDF (方案 A) — assemble_clean_pdf()
-   Re-renders OCR text into a cleanly typeset PDF using ReportLab.
-   Layout: for each source page, emit (1) a full-page image of the original
-   scan at 300 DPI, followed by (2) a text-only OCR page (no images).
+   Re-renders OCR text into a clean PDF using ReportLab (PyMuPDF fallback).
+   For each source page, emit (1) a full-page image of the original scan at
+   300 DPI, followed by (2) a text-only page of that page's OCR text laid
+   out like the original (page_layout.py): same page size, columns/rows,
+   line breaks and positions, with vertical CJK set as vertical text. A
+   page whose OCR boxes are unusable gets a reflowed text page instead.
 
 Searchable PDF (方案 B) — assemble_searchable_pdf()
    Keeps the original scanned pages pixel-for-pixel, and overlays an
@@ -39,6 +42,7 @@ from typing import List, Optional
 import fitz  # PyMuPDF
 
 from fonts import FitzFontChain, ReportLabFontChain
+from page_layout import layout_page
 from structure_analysis import DocumentStructure, StructuredPage
 
 logger = logging.getLogger(__name__)
@@ -93,25 +97,30 @@ def assemble_clean_pdf(
     structure: DocumentStructure,
     output_path: Path,
     source_pdf_path: Optional[Path] = None,
+    dpi: int = 400,
 ) -> None:
     """
     Re-render OCR text into a cleanly typeset PDF.
 
-    For each source page the output contains two consecutive pages:
+    For each source page the output contains two consecutive pages, both
+    the size of the original page:
       1. The original scan rasterised at 300 DPI (full-frame image).
-      2. A text-only OCR page with typeset paragraphs/headings (no images).
+      2. A text-only page with the OCR text placed as on the original
+         (reflowed when the page's OCR boxes are unusable).
+
+    `dpi` is the rasterisation DPI the OCR boxes are measured at.
 
     Tries ReportLab first; falls back to PyMuPDF on any failure.
     """
     logger.info(f"Assembling clean PDF: {output_path}")
     try:
-        _assemble_clean_pdf_reportlab(structure, output_path, source_pdf_path)
+        _assemble_clean_pdf_reportlab(structure, output_path, source_pdf_path, dpi)
         logger.info(f"Clean PDF written (ReportLab): {output_path} "
                      f"({output_path.stat().st_size/1024:.1f} KB)")
     except Exception as e:
         logger.warning(f"ReportLab build failed ({e}), falling back to PyMuPDF renderer")
         try:
-            _assemble_clean_pdf_pymupdf(structure, output_path, source_pdf_path)
+            _assemble_clean_pdf_pymupdf(structure, output_path, source_pdf_path, dpi)
             logger.info(f"Clean PDF written (PyMuPDF fallback): {output_path} "
                          f"({output_path.stat().st_size/1024:.1f} KB)")
         except Exception as e2:
@@ -120,18 +129,32 @@ def assemble_clean_pdf(
                                f"PDF assembly error: {e}")
 
 
+def _page_size_pt(page: StructuredPage, dpi: int, src_doc) -> tuple:
+    """Size in points of the original page (falls back to A4)."""
+    if page.width_px > 0 and page.height_px > 0:
+        return page.width_px * 72.0 / dpi, page.height_px * 72.0 / dpi
+    if src_doc is not None and 0 <= page.page_number < src_doc.page_count:
+        r = src_doc[page.page_number].rect
+        return r.width, r.height
+    return 595.28, 841.89
+
+
 def _assemble_clean_pdf_reportlab(
     structure: DocumentStructure,
     output_path: Path,
     source_pdf_path: Optional[Path],
+    dpi: int = 400,
 ) -> None:
-    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as RLImage,
-    )
+    from reportlab.lib.utils import ImageReader
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    from reportlab import rl_config
+    from reportlab.pdfgen.canvas import Canvas
+    from reportlab.platypus import Frame, Paragraph
+
+    # Store the scan JPEGs as binary streams: ASCII85 (ReportLab's default)
+    # is slow in pure Python and makes the file 25% bigger.
+    rl_config.useA85 = 0
 
     # Embedded TrueType fonts with per-character fallback. Raises when no
     # font files exist, which sends assemble_clean_pdf to the PyMuPDF path.
@@ -142,13 +165,13 @@ def _assemble_clean_pdf_reportlab(
     def _mk(text: str) -> str:
         return chain.markup(text, _esc)
 
+    # Styles for the reflowed fallback layout (pages without usable boxes).
     styles = getSampleStyleSheet()
 
     def _style(name, parent_name="Normal", **kw):
         parent = styles.get(parent_name, styles["Normal"])
         return ParagraphStyle(name, parent=parent, fontName=body_font, **kw)
 
-    s_title = _style("T", "Title",   fontSize=18, leading=24, spaceAfter=12, alignment=TA_CENTER)
     s_h1    = _style("H1","Heading1",fontSize=16, leading=22, spaceBefore=14, spaceAfter=8)
     s_h2    = _style("H2","Heading2",fontSize=14, leading=19, spaceBefore=10, spaceAfter=6)
     s_h3    = _style("H3","Heading3",fontSize=12, leading=17, spaceBefore=8,  spaceAfter=4)
@@ -158,15 +181,62 @@ def _assemble_clean_pdf_reportlab(
     s_pn    = _style("PN",fontSize=9,  leading=12, textColor="#888888", alignment=TA_CENTER)
     s_cap   = _style("C", fontSize=10, leading=14, textColor="#666666", alignment=TA_CENTER)
     s_li    = _style("LI",fontSize=11, leading=18, leftIndent=20, bulletIndent=10)
-    s_auth  = _style("A", fontSize=12, leading=18, alignment=TA_CENTER)
     hs = {1: s_h1, 2: s_h2, 3: s_h3}
 
-    A4_W, A4_H = A4  # 595.28 pt × 841.89 pt
-    SIDE    = 25 * mm
-    TOP     = 20 * mm
-    # Frame dimensions — scan images are sized to fill this area
-    frame_w = A4_W - 2 * SIDE
-    frame_h = A4_H - 2 * TOP
+    def _reflow_flowables(items) -> list:
+        out: list = []
+        for el in items:
+            t = el.text
+            safe = _mk(t)
+            try:
+                if el.element_type == "list-item":
+                    safe = _mk(f"\u2022 {t}")
+                if el.href:
+                    safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
+                if el.element_type == "heading":
+                    out.append(Paragraph(safe, hs.get(min(el.level, 3), s_h3)))
+                elif el.element_type == "list-item":
+                    out.append(Paragraph(safe, s_li))
+                elif el.element_type == "footnote":
+                    out.append(Paragraph(safe, s_fn))
+                elif el.element_type == "page-number":
+                    out.append(Paragraph(safe, s_pn))
+                elif el.element_type == "caption":
+                    out.append(Paragraph(safe, s_cap))
+                else:
+                    out.append(Paragraph(safe, s_body))
+            except Exception as e:
+                logger.warning(f"Skipping element: {e} — text: {t[:50]!r}")
+        return out
+
+    def _draw_reflow(c, flowables: list, w: float, h: float) -> None:
+        """Typeset flowables into page-sized frames, adding pages as needed."""
+        margin = min(w, h) * 0.08
+        while flowables:
+            frame = Frame(margin, margin, w - 2 * margin, h - 2 * margin,
+                          leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+            before = len(flowables)
+            frame.addFromList(flowables, c)
+            if flowables:
+                if len(flowables) == before:      # too big for any frame
+                    flowables.pop(0)
+                c.showPage()
+                c.setPageSize((w, h))
+
+    def _draw_glyphs(c, glyphs, h: float) -> None:
+        for g in glyphs:
+            y = h - g.y                           # top-left → ReportLab origin
+            if g.rotate:
+                c.saveState()
+                c.translate(g.x, y)
+                c.rotate(-g.rotate)               # clockwise
+                chain.draw(c, g.text, 0, 0, g.size)
+                c.restoreState()
+            else:
+                chain.draw(c, g.text, g.x, y, g.size)
+
+    measure = chain.text_width
+    px_to_pt = 72.0 / float(dpi or 400)
 
     # Open source PDF for scan page rasterisation (optional)
     src_doc: Optional[fitz.Document] = None
@@ -177,92 +247,54 @@ def _assemble_clean_pdf_reportlab(
             logger.warning(f"Could not open source PDF for scan embedding: {e}")
 
     try:
-        story: list = []
+        c = Canvas(str(output_path))
+        c.setTitle(structure.title or "Untitled")
+        c.setAuthor(structure.author or "")
+        started = False
+
+        def _new_page(w: float, h: float) -> None:
+            nonlocal started
+            if started:
+                c.showPage()
+            c.setPageSize((w, h))
+            started = True
 
         # ── Title page ───────────────────────────────────────────────────────
         if structure.title:
-            story.append(Spacer(1, 40 * mm))
-            story.append(Paragraph(_mk(structure.title), s_title))
-            if structure.author:
-                story.append(Spacer(1, 5 * mm))
-                story.append(Paragraph(_mk(structure.author), s_auth))
+            w, h = 595.28, 841.89
+            _new_page(w, h)
+            for text, size, y in ((structure.title, 18, h * 0.3),
+                                  (structure.author, 12, h * 0.3 + 30)):
+                if text:
+                    chain.draw(c, text, (w - measure(text, size)) / 2, h - y, size)
 
-        has_any_page = False
         page_items = _prepare_clean_text(structure.pages)
-
         for page, items in zip(structure.pages, page_items):
             pno = page.page_number
+            w, h = _page_size_pt(page, dpi, src_doc)
 
             # ── 1. Original scan page ────────────────────────────────────────
             if src_doc is not None and 0 <= pno < src_doc.page_count:
                 scan_jpeg = _rasterise_source_page_jpeg(src_doc, pno, _SCAN_DPI)
                 if scan_jpeg is not None:
-                    if story:
-                        story.append(PageBreak())
-                    story.append(RLImage(io.BytesIO(scan_jpeg),
-                                         width=frame_w, height=frame_h,
-                                         kind="proportional"))
-                    has_any_page = True
+                    _new_page(w, h)
+                    c.drawImage(ImageReader(io.BytesIO(scan_jpeg)), 0, 0, w, h)
 
-            # ── 2. OCR text-only page ────────────────────────────────────────
-            text_items: list = []
-            for el in items:
-                t = el.text
-                safe = _mk(t)
-                try:
-                    if el.element_type == "heading":
-                        if el.href:
-                            safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
-                        text_items.append(Paragraph(safe, hs.get(min(el.level, 3), s_h3)))
-                    elif el.element_type == "paragraph":
-                        if el.href:
-                            safe = f'<a href="{_esc(el.href)}" color="blue">{safe}</a>'
-                        text_items.append(Paragraph(safe, s_body))
-                    elif el.element_type == "list-item":
-                        bullet_safe = _mk(f"\u2022 {t}")
-                        if el.href:
-                            bullet_safe = f'<a href="{_esc(el.href)}" color="blue">{bullet_safe}</a>'
-                        text_items.append(Paragraph(bullet_safe, s_li))
-                    elif el.element_type == "footnote":
-                        text_items.append(Paragraph(safe, s_fn))
-                    elif el.element_type == "page-number":
-                        text_items.append(Paragraph(safe, s_pn))
-                    elif el.element_type == "caption":
-                        text_items.append(Paragraph(safe, s_cap))
-                    else:
-                        text_items.append(Paragraph(safe, s_body))
-                except Exception as e:
-                    logger.warning(f"Skipping element: {e} — text: {t[:50]!r}")
+            # ── 2. OCR text page, laid out like the original ─────────────────
+            if not items:
+                continue
+            _new_page(w, h)
+            glyphs = layout_page(page, px_to_pt, w, h, measure, chain.ink)
+            if glyphs:
+                _draw_glyphs(c, glyphs, h)
+            else:
+                _draw_reflow(c, _reflow_flowables(items), w, h)
 
-            if text_items:
-                story.append(PageBreak())
-                story.extend(text_items)
-                has_any_page = True
-
-        # ── Fallback: nothing produced ───────────────────────────────────────
-        if not has_any_page:
-            if story:
-                story.append(Spacer(1, 10 * mm))
-            story.append(Paragraph(
-                "[ No body text was extracted from this PDF ]", s_body
-            ))
-
-        if not story:
-            story.append(Paragraph(_mk(structure.title or "Untitled"), s_title))
-            story.append(Spacer(1, 10 * mm))
-            story.append(Paragraph(
-                "[ No text content could be extracted from this PDF ]", s_body
-            ))
-
-        doc = SimpleDocTemplate(
-            str(output_path),
-            pagesize=A4,
-            leftMargin=SIDE, rightMargin=SIDE,
-            topMargin=TOP,   bottomMargin=TOP,
-            title=structure.title or "Untitled",
-            author=structure.author or "",
-        )
-        doc.build(story)
+        if not started:
+            _new_page(595.28, 841.89)
+            msg = "[ No text content could be extracted from this PDF ]"
+            chain.draw(c, msg, 72, 841.89 - 300, 12)
+        c.save()
 
     finally:
         if src_doc is not None:
@@ -276,13 +308,17 @@ def _assemble_clean_pdf_pymupdf(
     structure: DocumentStructure,
     output_path: Path,
     source_pdf_path: Optional[Path],
+    dpi: int = 400,
 ) -> None:
     """
-    PyMuPDF fallback for clean PDF assembly.
-    Emits: title page → for each source page: scan page (300 DPI) + text-only page.
+    PyMuPDF fallback for clean PDF assembly — same page pairs as the
+    ReportLab renderer: title page → for each source page: scan page +
+    text page laid out like the original (reflowed when boxes are unusable).
     """
     doc = fitz.open()
     font = _fitz_font_chain(structure.dominant_language)
+    measure = font.text_length
+    px_to_pt = 72.0 / float(dpi or 400)
 
     title  = structure.title or "Untitled"
     author = structure.author or ""
@@ -314,60 +350,29 @@ def _assemble_clean_pdf_pymupdf(
 
         for struct_page, text_elements in zip(structure.pages, page_items):
             pno = struct_page.page_number
+            w, h = _page_size_pt(struct_page, dpi, src_doc)
 
             # ── 1. Original scan page ────────────────────────────────────────
             if src_doc is not None and 0 <= pno < src_doc.page_count:
                 scan_jpeg = _rasterise_source_page_jpeg(src_doc, pno, _SCAN_DPI)
                 if scan_jpeg is not None:
-                    scan_page = doc.new_page(width=595, height=842)
+                    scan_page = doc.new_page(width=w, height=h)
                     try:
                         scan_page.insert_image(scan_page.rect, stream=scan_jpeg)
                         has_any_content = True
                     except Exception as e:
                         logger.warning(f"PyMuPDF: could not insert scan image for page {pno}: {e}")
 
-            # ── 2. OCR text-only page ────────────────────────────────────────
+            # ── 2. OCR text page, laid out like the original ─────────────────
             if not text_elements:
                 continue
-
-            text_page   = doc.new_page(width=595, height=842)
-            y_cursor    = 60.0
-            margin_left = 50.0
-            max_width   = 495.0
-
-            for el in text_elements:
-                text = el.text
-
-                if el.element_type == "heading":
-                    fs = 16 if el.level == 1 else 14 if el.level == 2 else 12
-                    y_cursor += 8
-                elif el.element_type == "footnote":
-                    fs = 9
-                elif el.element_type == "page-number":
-                    fs = 8
-                elif el.element_type == "caption":
-                    fs = 10
-                else:
-                    fs = 11
-
-                lines = _wrap_text_fitz(text, font, fs, max_width)
-                for line in lines:
-                    if y_cursor > 790:
-                        text_page = doc.new_page(width=595, height=842)
-                        y_cursor = 60.0
-                    try:
-                        tw = fitz.TextWriter(text_page.rect)
-                        font.append(tw, (margin_left, y_cursor), line, fs)
-                        tw.write_text(text_page)
-                    except Exception:
-                        try:
-                            text_page.insert_text((margin_left, y_cursor),
-                                                  line[:200], fontsize=fs)
-                        except Exception:
-                            pass
-                    y_cursor += fs * 1.5
-                y_cursor += 4
-                has_any_content = True
+            text_page = doc.new_page(width=w, height=h)
+            has_any_content = True
+            glyphs = layout_page(struct_page, px_to_pt, w, h, measure, font.ink)
+            if glyphs:
+                _draw_glyphs_fitz(text_page, glyphs, font)
+            else:
+                _reflow_fitz(doc, text_page, text_elements, font, w, h)
 
         if not has_any_content:
             fallback_page = doc[0]
@@ -390,6 +395,62 @@ def _assemble_clean_pdf_pymupdf(
                 src_doc.close()
             except Exception:
                 pass
+
+
+def _draw_glyphs_fitz(page, glyphs, font: FitzFontChain) -> None:
+    """Draw page_layout Glyphs; rotated runs each get their own morph."""
+    # Written in order (upright text is flushed before each rotated run) so
+    # the text extracts in reading order.
+    upright = fitz.TextWriter(page.rect)
+    pending = False
+    for g in glyphs:
+        if g.rotate:
+            if pending:
+                upright.write_text(page)
+                upright, pending = fitz.TextWriter(page.rect), False
+            tw = fitz.TextWriter(page.rect)
+            font.append(tw, (g.x, g.y), g.text, g.size)
+            tw.write_text(page, morph=(fitz.Point(g.x, g.y), fitz.Matrix(-g.rotate)))
+        else:
+            font.append(upright, (g.x, g.y), g.text, g.size)
+            pending = True
+    if pending:
+        upright.write_text(page)
+
+
+def _reflow_fitz(doc, text_page, text_elements, font: FitzFontChain,
+                 w: float, h: float) -> None:
+    """Reflowed fallback layout (pages whose OCR boxes are unusable)."""
+    margin = min(w, h) * 0.08
+    max_width = w - 2 * margin
+    y_cursor = margin + 11
+    for el in text_elements:
+        if el.element_type == "heading":
+            fs = 16 if el.level == 1 else 14 if el.level == 2 else 12
+            y_cursor += 8
+        elif el.element_type == "footnote":
+            fs = 9
+        elif el.element_type == "page-number":
+            fs = 8
+        elif el.element_type == "caption":
+            fs = 10
+        else:
+            fs = 11
+        for line in _wrap_text_fitz(el.text, font, fs, max_width):
+            if y_cursor > h - margin:
+                text_page = doc.new_page(width=w, height=h)
+                y_cursor = margin + fs
+            try:
+                tw = fitz.TextWriter(text_page.rect)
+                font.append(tw, (margin, y_cursor), line, fs)
+                tw.write_text(text_page)
+            except Exception:
+                try:
+                    text_page.insert_text((margin, y_cursor), line[:200], fontsize=fs)
+                except Exception:
+                    pass
+            y_cursor += fs * 1.5
+        y_cursor += 4
 
 
 def _wrap_text_fitz(text: str, font, fontsize: float, max_width: float) -> List[str]:
