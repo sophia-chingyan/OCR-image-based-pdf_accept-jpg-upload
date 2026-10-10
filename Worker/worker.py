@@ -27,7 +27,8 @@ Skip-and-continue on OCR failure:
   re-attempts only the skipped pages without re-spending quota.
 
 Output formats:
-- "clean"      → assemble_clean_pdf() — re-typeset fresh PDF
+- "clean"      → assemble_clean_pdf() — re-typeset fresh PDF, plus a
+                 text-only PDF (OCR text pages only, include_scans=False)
 - "searchable" → assemble_searchable_pdf() — original scan + invisible text layer
 Both can be requested simultaneously; each produces its own output file.
 """
@@ -343,6 +344,19 @@ def run_pipeline(r, job: dict, engine) -> None:
             except Exception as e:
                 logger.error(f"Clean PDF assembly failed for {job_id}: {e}\n{traceback.format_exc()}")
                 assembly_errors.append(f"clean: {e}")
+
+            # Text-only companion: just the OCR text pages, in page order.
+            update_job(r, job_id,
+                       message=("Building text-only PDF (partial)…" if is_partial else "Building text-only PDF…"),
+                       progress=90)
+            try:
+                p = OUTPUT_DIR / f"{job_id}_text.pdf"
+                assemble_clean_pdf(structure, p, source_pdf_path=pdf_path, dpi=DPI,
+                                   include_scans=False)
+                produced["clean_text_pdf_path"] = str(p)
+            except Exception as e:
+                logger.error(f"Text-only PDF assembly failed for {job_id}: {e}\n{traceback.format_exc()}")
+                assembly_errors.append(f"text-only: {e}")
 
         if "searchable" in formats:
             update_job(r, job_id,

@@ -12,6 +12,8 @@ Clean PDF (方案 A) — assemble_clean_pdf()
    found in the page image (scan_layout.py) and the OCR text is poured into
    them (page_layout.py) — the OCR model's own boxes aren't trusted. A page
    whose text doesn't fit its scanned lines gets a reflowed text page.
+   With include_scans=False the scan pages are left out, giving a text-only
+   PDF: just the OCR text pages, in page order.
 
 Searchable PDF (方案 B) — assemble_searchable_pdf()
    Keeps the original scanned pages pixel-for-pixel, and overlays an
@@ -124,6 +126,7 @@ def assemble_clean_pdf(
     output_path: Path,
     source_pdf_path: Optional[Path] = None,
     dpi: int = 400,
+    include_scans: bool = True,
 ) -> None:
     """
     Re-render OCR text into a cleanly typeset PDF.
@@ -135,18 +138,22 @@ def assemble_clean_pdf(
          (reflowed when the page's OCR boxes are unusable).
 
     `dpi` is the rasterisation DPI the OCR boxes are measured at.
+    `include_scans=False` leaves out the scan pages (1.), so the output is
+    only the text pages in page order.
 
     Tries ReportLab first; falls back to PyMuPDF on any failure.
     """
     logger.info(f"Assembling clean PDF: {output_path}")
     try:
-        _assemble_clean_pdf_reportlab(structure, output_path, source_pdf_path, dpi)
+        _assemble_clean_pdf_reportlab(structure, output_path, source_pdf_path, dpi,
+                                      include_scans)
         logger.info(f"Clean PDF written (ReportLab): {output_path} "
                      f"({output_path.stat().st_size/1024:.1f} KB)")
     except Exception as e:
         logger.warning(f"ReportLab build failed ({e}), falling back to PyMuPDF renderer")
         try:
-            _assemble_clean_pdf_pymupdf(structure, output_path, source_pdf_path, dpi)
+            _assemble_clean_pdf_pymupdf(structure, output_path, source_pdf_path, dpi,
+                                        include_scans)
             logger.info(f"Clean PDF written (PyMuPDF fallback): {output_path} "
                          f"({output_path.stat().st_size/1024:.1f} KB)")
         except Exception as e2:
@@ -170,6 +177,7 @@ def _assemble_clean_pdf_reportlab(
     output_path: Path,
     source_pdf_path: Optional[Path],
     dpi: int = 400,
+    include_scans: bool = True,
 ) -> None:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.utils import ImageReader
@@ -312,7 +320,7 @@ def _assemble_clean_pdf_reportlab(
             w, h = _page_size_pt(page, dpi, src_doc)
 
             # ── 1. Original scan page ────────────────────────────────────────
-            if src_doc is not None and 0 <= pno < src_doc.page_count:
+            if include_scans and src_doc is not None and 0 <= pno < src_doc.page_count:
                 scan_jpeg = _rasterise_source_page_jpeg(src_doc, pno, _SCAN_DPI)
                 if scan_jpeg is not None:
                     _new_page(w, h)
@@ -348,6 +356,7 @@ def _assemble_clean_pdf_pymupdf(
     output_path: Path,
     source_pdf_path: Optional[Path],
     dpi: int = 400,
+    include_scans: bool = True,
 ) -> None:
     """
     PyMuPDF fallback for clean PDF assembly — same page pairs as the
@@ -391,7 +400,7 @@ def _assemble_clean_pdf_pymupdf(
             w, h = _page_size_pt(struct_page, dpi, src_doc)
 
             # ── 1. Original scan page ────────────────────────────────────────
-            if src_doc is not None and 0 <= pno < src_doc.page_count:
+            if include_scans and src_doc is not None and 0 <= pno < src_doc.page_count:
                 scan_jpeg = _rasterise_source_page_jpeg(src_doc, pno, _SCAN_DPI)
                 if scan_jpeg is not None:
                     scan_page = doc.new_page(width=w, height=h)
