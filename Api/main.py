@@ -130,7 +130,7 @@ async def _purge_job_record(r, job_id: str) -> None:
             status = job.get("status", "")
             if status in ("queued", "processing", "paused", "pending"):
                 return
-            for key in ("pdf_path", "clean_pdf_path", "searchable_pdf_path"):
+            for key in ("pdf_path", "clean_pdf_path", "clean_text_pdf_path", "searchable_pdf_path"):
                 try:
                     p = Path(job.get(key, ""))
                     if p.exists():
@@ -331,6 +331,7 @@ async def upload_pdf(
         "created_at":          int(time.time()),
         "pdf_path":            str(pdf_path),
         "clean_pdf_path":      "",
+        "clean_text_pdf_path": "",
         "searchable_pdf_path": "",
         "error":               "",
         "stop_requested":      False,
@@ -430,6 +431,38 @@ async def download_clean_pdf(job_id: str, user: str = Depends(require_auth)):
     return FileResponse(str(p), media_type="application/pdf",
                         filename=f"{Path(job['filename']).stem}_clean.pdf")
 
+# ── Download: Text-only PDF (OCR text pages of the clean PDF, in order) ──────
+@app.get("/api/download/{job_id}/text")
+async def download_text_pdf(job_id: str, user: str = Depends(require_auth)):
+    r = await get_async_redis()
+    try:
+        raw = await r.get(f"job:{job_id}")
+    finally:
+        await r.aclose()
+    if not raw:
+        raise HTTPException(404, "Job not found.")
+    job = json.loads(raw)
+    if job["status"] != "done":
+        raise HTTPException(400, "Job not complete.")
+    p = Path(job.get("clean_text_pdf_path", ""))
+    if not p.exists():
+        try:
+            job["clean_text_pdf_path"] = ""
+            r2 = await get_async_redis()
+            try:
+                await r2.set(f"job:{job_id}", json.dumps(job))
+            finally:
+                await r2.aclose()
+        except Exception:
+            pass
+        raise HTTPException(
+            410,
+            "Text-only PDF is no longer available (output retention window "
+            "expired). Please re-upload and reconvert."
+        )
+    return FileResponse(str(p), media_type="application/pdf",
+                        filename=f"{Path(job['filename']).stem}_text.pdf")
+
 # ── Download: Searchable PDF ──────────────────────────────────────────────────
 @app.get("/api/download/{job_id}/searchable")
 async def download_searchable_pdf(job_id: str, user: str = Depends(require_auth)):
@@ -508,7 +541,7 @@ async def start_job(job_id: str, request: Request, user: str = Depends(require_a
                         )
 
                     # Clear any previous output files.
-                    for old_key in ("clean_pdf_path", "searchable_pdf_path"):
+                    for old_key in ("clean_pdf_path", "clean_text_pdf_path", "searchable_pdf_path"):
                         old = job.get(old_key, "")
                         if old:
                             try:
@@ -520,6 +553,7 @@ async def start_job(job_id: str, request: Request, user: str = Depends(require_a
 
                     job["output_formats"]      = formats
                     job["clean_pdf_path"]      = ""
+                    job["clean_text_pdf_path"] = ""
                     job["searchable_pdf_path"] = ""
                     job["language_hints"]      = language_hints
                     job.update(status="queued", message="Queued", progress=0, error="",
@@ -636,7 +670,7 @@ async def delete_job(job_id: str, user: str = Depends(require_auth)):
             raise HTTPException(400, "Stop it first.")
         if job["status"] == "queued":
             await r.lrem("job_queue", 0, job_id)
-        for key in ("pdf_path", "clean_pdf_path", "searchable_pdf_path"):
+        for key in ("pdf_path", "clean_pdf_path", "clean_text_pdf_path", "searchable_pdf_path"):
             try:
                 p = Path(job.get(key, ""))
                 if p.exists():

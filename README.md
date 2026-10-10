@@ -7,6 +7,7 @@ Self-hosted, single-user web app that converts **image-based PDF files and JPG i
 - ✅ Languages: Traditional Chinese, Simplified Chinese, Japanese, Korean, English (and 100+ others)
 - ✅ Auto-detects horizontal / vertical text layout per page
 - ✅ Clean PDF pairs each scanned page with a text page laid out like the original — same columns/rows, line breaks and positions, vertical CJK set vertically. The printed lines are detected in the page image itself, so the layout doesn't depend on the OCR model's (often unreliable) bounding boxes
+- ✅ With Clean PDF you also get a text-only PDF: all the OCR text pages, without the scans, merged in page order
 - ✅ Clean and searchable PDFs embed their fonts, with per-character fallback so text in any script (CJK, Latin, Cyrillic, Thai, …) renders, copies and searches correctly
 - ✅ Re-embeds images, preserves hyperlinks, headings, TOC, footnotes, page numbers
 - ✅ Async job queue with Start / Pause / Stop / Delete / Retry controls
@@ -151,7 +152,7 @@ docker compose logs -f
 2. `https://YOUR-DOMAIN` → login page
 3. Sign in with the allowlisted Gmail
 4. Upload a PDF or JPG, click **Start**, watch progress
-5. When done, click **↓ Clean PDF** to download
+5. When done, click **↓ Clean PDF** to download, or **↓ Text pages PDF** for a file with only the OCR text pages, merged in page order
 
 ---
 

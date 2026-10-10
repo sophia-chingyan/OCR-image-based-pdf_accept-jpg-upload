@@ -285,8 +285,9 @@
       const date  = fmtDate(job.created_at);
 
       const hasClean  = !!job.clean_pdf_path;
+      const hasText   = !!job.clean_text_pdf_path;
       const hasSearch = !!job.searchable_pdf_path;
-      const anyAvail  = hasClean || hasSearch;
+      const anyAvail  = hasClean || hasText || hasSearch;
 
       let formatBadges = '';
       if (hasClean)  formatBadges += '<span class="badge badge-pdf">CLEAN</span>';
@@ -296,6 +297,8 @@
       let downloadBtns = '';
       if (hasClean)
         downloadBtns += `<a href="/api/download/${id}/clean" class="btn btn-ghost btn-sm" download title="Download clean PDF">${DL_ICON} Clean</a>`;
+      if (hasText)
+        downloadBtns += `<a href="/api/download/${id}/text" class="btn btn-ghost btn-sm" download title="Download the OCR text pages only">${DL_ICON} Text</a>`;
       if (hasSearch)
         downloadBtns += `<a href="/api/download/${id}/searchable" class="btn btn-ghost btn-sm" download title="Download searchable PDF">${DL_ICON} Searchable</a>`;
       if (!anyAvail)
