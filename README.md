@@ -6,7 +6,7 @@ Self-hosted, single-user web app that converts **image-based PDF files and JPG i
 - ✅ OCR via Google Gemini (`gemini-3.5-flash-lite` by default, switchable with the `GEMINI_MODEL` variable) — or via **Poe** or **OpenRouter** (any vision-capable model either routes to: Claude, GPT, Gemini, …), selectable per job from the app's **Settings** page (or `ocr.engine` in `config.yaml` as the fallback default)
 - ✅ Languages: Traditional Chinese, Simplified Chinese, Japanese, Korean, English (and 100+ others)
 - ✅ Auto-detects horizontal / vertical text layout per page
-- ✅ Clean PDF pairs each scanned page with a text page laid out like the original — same columns/rows, line breaks and positions, vertical CJK set vertically
+- ✅ Clean PDF pairs each scanned page with a text page laid out like the original — same columns/rows, line breaks and positions, vertical CJK set vertically. The printed lines are detected in the page image itself, so the layout doesn't depend on the OCR model's (often unreliable) bounding boxes
 - ✅ Clean and searchable PDFs embed their fonts, with per-character fallback so text in any script (CJK, Latin, Cyrillic, Thai, …) renders, copies and searches correctly
 - ✅ Re-embeds images, preserves hyperlinks, headings, TOC, footnotes, page numbers
 - ✅ Async job queue with Start / Pause / Stop / Delete / Retry controls
@@ -359,7 +359,8 @@ ocr-pdf/
     ├── pdf_ingestion.py    # PyMuPDF + JPG→1-page-PDF conversion
     ├── structure_analysis.py # text → headings / paragraphs / footnotes / …
     ├── pdf_assembly.py     # ReportLab / PyMuPDF: clean + searchable PDF output
-    ├── page_layout.py      # places OCR text where it sits on the original page
+    ├── scan_layout.py      # finds the printed lines (columns/rows) in the page image
+    ├── page_layout.py      # pours the OCR text into those lines (vertical CJK typesetting)
     └── fonts.py            # embedded font chains with per-character fallback
 ```
 

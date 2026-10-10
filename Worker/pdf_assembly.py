@@ -7,16 +7,20 @@ Clean PDF (方案 A) — assemble_clean_pdf()
    Re-renders OCR text into a clean PDF using ReportLab (PyMuPDF fallback).
    For each source page, emit (1) a full-page image of the original scan at
    300 DPI, followed by (2) a text-only page of that page's OCR text laid
-   out like the original (page_layout.py): same page size, columns/rows,
-   line breaks and positions, with vertical CJK set as vertical text. A
-   page whose OCR boxes are unusable gets a reflowed text page instead.
+   out like the original: same page size, columns/rows, line breaks and
+   positions, with vertical CJK set as vertical text. The printed lines are
+   found in the page image (scan_layout.py) and the OCR text is poured into
+   them (page_layout.py) — the OCR model's own boxes aren't trusted. A page
+   whose text doesn't fit its scanned lines gets a reflowed text page.
 
 Searchable PDF (方案 B) — assemble_searchable_pdf()
    Keeps the original scanned pages pixel-for-pixel, and overlays an
    INVISIBLE OCR text layer using PyMuPDF render_mode=3 so the text is
    selectable, copyable, and searchable without altering the appearance.
-   Per-line bboxes (horizontal) and per-character-column distribution
-   (vertical CJK) give tight selection alignment.
+   The text is placed on the printed lines found in the page image, the
+   same layout as the clean PDF's text pages, so selection lands on the
+   printed characters; pages where that layout is rejected fall back to the
+   OCR model's per-line / per-block boxes.
 
 Font selection (see fonts.py):
 Every renderer uses an embedded font *chain* and picks, per character, the
@@ -42,7 +46,8 @@ from typing import List, Optional
 import fitz  # PyMuPDF
 
 from fonts import FitzFontChain, ReportLabFontChain
-from page_layout import layout_page
+from page_layout import join_visual_lines as _join_visual_lines, layout_page
+from scan_layout import detect_lines
 from structure_analysis import DocumentStructure, StructuredPage
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,27 @@ def _rasterise_source_page_jpeg(src_doc: fitz.Document, page_num: int, dpi: int)
     except Exception as e:
         logger.warning(f"Could not rasterise source page {page_num} at {dpi} DPI: {e}")
         return None
+
+
+_LAYOUT_DPI = 150   # scan resolution for detecting the printed lines
+
+
+def _scan_of(src_doc, page) -> tuple:
+    """
+    (ScanLayout or None, points per scan pixel) for a structured page: its
+    printed lines detected in the source page image.
+    """
+    scale = 72.0 / _LAYOUT_DPI
+    if src_doc is None or not (0 <= page.page_number < src_doc.page_count):
+        return None, scale
+    try:
+        import numpy as np
+        pix = src_doc[page.page_number].get_pixmap(dpi=_LAYOUT_DPI, colorspace=fitz.csGRAY)
+        gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.stride)[:, :pix.width]
+        return detect_lines(gray, page.direction == "vertical"), scale
+    except Exception as e:
+        logger.warning(f"Page {page.page_number}: scan line detection failed ({e})")
+        return None, scale
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,16 +238,29 @@ def _assemble_clean_pdf_reportlab(
     def _draw_reflow(c, flowables: list, w: float, h: float) -> None:
         """Typeset flowables into page-sized frames, adding pages as needed."""
         margin = min(w, h) * 0.08
+
+        def _frame():
+            return Frame(margin, margin, w - 2 * margin, h - 2 * margin,
+                         leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+
+        frame, fresh = _frame(), True
         while flowables:
-            frame = Frame(margin, margin, w - 2 * margin, h - 2 * margin,
-                          leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-            before = len(flowables)
-            frame.addFromList(flowables, c)
-            if flowables:
-                if len(flowables) == before:      # too big for any frame
-                    flowables.pop(0)
-                c.showPage()
-                c.setPageSize((w, h))
+            f0 = flowables[0]
+            if frame.add(f0, c):
+                flowables.pop(0)
+                fresh = False
+                continue
+            # Doesn't fit the rest of this page: split it across pages.
+            parts = frame.split(f0, c)
+            if len(parts) > 1 and frame.add(parts[0], c):
+                flowables[0:1] = parts[1:]
+            elif fresh:                           # can't fit even an empty page
+                logger.warning("Reflow: dropping an element too large for a page")
+                flowables.pop(0)
+                continue
+            c.showPage()
+            c.setPageSize((w, h))
+            frame, fresh = _frame(), True
 
     def _draw_glyphs(c, glyphs, h: float) -> None:
         for g in glyphs:
@@ -236,7 +275,6 @@ def _assemble_clean_pdf_reportlab(
                 chain.draw(c, g.text, g.x, y, g.size)
 
     measure = chain.text_width
-    px_to_pt = 72.0 / float(dpi or 400)
 
     # Open source PDF for scan page rasterisation (optional)
     src_doc: Optional[fitz.Document] = None
@@ -284,7 +322,8 @@ def _assemble_clean_pdf_reportlab(
             if not items:
                 continue
             _new_page(w, h)
-            glyphs = layout_page(page, px_to_pt, w, h, measure, chain.ink)
+            scan, scale = _scan_of(src_doc, page)
+            glyphs = layout_page(page, scan, scale, measure, chain.ink)
             if glyphs:
                 _draw_glyphs(c, glyphs, h)
             else:
@@ -313,12 +352,11 @@ def _assemble_clean_pdf_pymupdf(
     """
     PyMuPDF fallback for clean PDF assembly — same page pairs as the
     ReportLab renderer: title page → for each source page: scan page +
-    text page laid out like the original (reflowed when boxes are unusable).
+    text page laid out like the original (reflowed when it can't be).
     """
     doc = fitz.open()
     font = _fitz_font_chain(structure.dominant_language)
     measure = font.text_length
-    px_to_pt = 72.0 / float(dpi or 400)
 
     title  = structure.title or "Untitled"
     author = structure.author or ""
@@ -368,7 +406,8 @@ def _assemble_clean_pdf_pymupdf(
                 continue
             text_page = doc.new_page(width=w, height=h)
             has_any_content = True
-            glyphs = layout_page(struct_page, px_to_pt, w, h, measure, font.ink)
+            scan, scale = _scan_of(src_doc, struct_page)
+            glyphs = layout_page(struct_page, scan, scale, measure, font.ink)
             if glyphs:
                 _draw_glyphs_fitz(text_page, glyphs, font)
             else:
@@ -397,8 +436,11 @@ def _assemble_clean_pdf_pymupdf(
                 pass
 
 
-def _draw_glyphs_fitz(page, glyphs, font: FitzFontChain) -> None:
-    """Draw page_layout Glyphs; rotated runs each get their own morph."""
+def _draw_glyphs_fitz(page, glyphs, font: FitzFontChain, render_mode: int = 0) -> None:
+    """
+    Draw page_layout Glyphs; rotated runs each get their own morph.
+    render_mode 3 draws them invisible (searchable PDF text layer).
+    """
     # Written in order (upright text is flushed before each rotated run) so
     # the text extracts in reading order.
     upright = fitz.TextWriter(page.rect)
@@ -406,16 +448,17 @@ def _draw_glyphs_fitz(page, glyphs, font: FitzFontChain) -> None:
     for g in glyphs:
         if g.rotate:
             if pending:
-                upright.write_text(page)
+                upright.write_text(page, render_mode=render_mode)
                 upright, pending = fitz.TextWriter(page.rect), False
             tw = fitz.TextWriter(page.rect)
             font.append(tw, (g.x, g.y), g.text, g.size)
-            tw.write_text(page, morph=(fitz.Point(g.x, g.y), fitz.Matrix(-g.rotate)))
+            tw.write_text(page, morph=(fitz.Point(g.x, g.y), fitz.Matrix(-g.rotate)),
+                          render_mode=render_mode)
         else:
             font.append(upright, (g.x, g.y), g.text, g.size)
             pending = True
     if pending:
-        upright.write_text(page)
+        upright.write_text(page, render_mode=render_mode)
 
 
 def _reflow_fitz(doc, text_page, text_elements, font: FitzFontChain,
@@ -488,32 +531,6 @@ class _CleanItem:
     text: str
     level: int = 1
     href: Optional[str] = None
-
-
-def _is_cjk(ch: str) -> bool:
-    o = ord(ch)
-    return (0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF
-            or 0xF900 <= o <= 0xFAFF or 0xFF00 <= o <= 0xFFEF
-            or 0x20000 <= o <= 0x2FA1F)
-
-
-def _join_visual_lines(text: str) -> str:
-    """
-    Join the visual lines (rows, or columns in vertical text) of one OCR
-    block into continuous text. The OCR keeps the page's line breaks, but in
-    the reflowed clean PDF they are just line-wrap points: rendered as-is
-    they become stray spaces between CJK characters (ReportLab) or short
-    broken lines (PyMuPDF). A space is kept only between two non-CJK words.
-    """
-    parts = [ln.strip() for ln in text.split("\n")]
-    out = ""
-    for part in parts:
-        if not part:
-            continue
-        if out and not _is_cjk(out[-1]) and not _is_cjk(part[0]):
-            out += " "
-        out += part
-    return out
 
 
 def _prepare_clean_text(pages: List[StructuredPage]) -> List[List[_CleanItem]]:
@@ -608,6 +625,14 @@ def _assemble_searchable_pdf_impl(
             continue
         page      = doc[pno]
         page_rect = page.rect
+
+        # Preferred: text placed on the printed lines found in the scan.
+        scan, scale = _scan_of(doc, sp)
+        glyphs = layout_page(sp, scan, scale, font.text_length, font.ink)
+        if glyphs:
+            _draw_glyphs_fitz(page, glyphs, font, render_mode=3)
+            overlaid += len(glyphs)
+            continue
 
         for el in sp.elements:
             text = (el.text or "").strip()
