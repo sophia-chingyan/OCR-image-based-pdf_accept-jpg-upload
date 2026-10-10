@@ -110,6 +110,7 @@ def font_specs(language: str) -> Tuple[FontSpec, ...]:
     return tuple(specs)
 
 
+@lru_cache(maxsize=None)
 def _ttc_index(path: str, face: Optional[str]) -> int:
     """Subfont index of `face` inside a .ttc (0 for .ttf or when not found)."""
     if not face or not path.lower().endswith(".ttc"):
@@ -127,6 +128,25 @@ def _ttc_index(path: str, face: Optional[str]) -> int:
         if fam == face:
             return i
         i += 1
+
+
+@lru_cache(maxsize=4096)
+def _ink_box(source, index: int, ch: str) -> Optional[Tuple[float, float, float, float]]:
+    """
+    Ink bounding box of `ch` in em units, relative to its origin on the
+    baseline, y pointing down: (x0, y0, x1, y1). `source` is a font file
+    path or the font's bytes. None when the glyph has no ink or can't be read.
+    """
+    try:
+        import io
+        from PIL import ImageFont
+        src = io.BytesIO(source) if isinstance(source, bytes) else source
+        box = ImageFont.truetype(src, 1000, index=index).getbbox(ch, anchor="ls")
+    except Exception:
+        return None
+    if not box or box[2] <= box[0] or box[3] <= box[1]:
+        return None
+    return tuple(v / 1000.0 for v in box)
 
 
 class _FontChain:
@@ -151,6 +171,15 @@ class _FontChain:
 
     def _has_glyph(self, i: int, ch: str) -> bool:
         raise NotImplementedError
+
+    def _ink_source(self, i: int):
+        """(font path or bytes, ttc index) for ink measurement."""
+        raise NotImplementedError
+
+    def ink(self, ch: str) -> Optional[Tuple[float, float, float, float]]:
+        """Ink box of `ch` (em units, baseline origin, y down) in its font."""
+        source, index = self._ink_source(self.index_for(ch))
+        return _ink_box(source, index, ch)
 
     def index_for(self, ch: str) -> int:
         """Index of the first font that has `ch` (0 when none does)."""
@@ -229,6 +258,10 @@ class ReportLabFontChain(_FontChain):
     def _has_glyph(self, i: int, ch: str) -> bool:
         return ord(ch) in self._load(i).face.charToGlyph
 
+    def _ink_source(self, i: int):
+        path, face = self.specs[i]
+        return path, _ttc_index(path, face)
+
     def name(self, i: int) -> str:
         return self._load(i).fontName
 
@@ -239,6 +272,19 @@ class ReportLabFontChain(_FontChain):
             safe = escape(run)
             parts.append(safe if i == 0 else f'<font name="{self.name(i)}">{safe}</font>')
         return "".join(parts)
+
+    def text_width(self, text: str, size: float) -> float:
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        return sum(stringWidth(run, self.name(i), size) for i, run in self.runs(text))
+
+    def draw(self, canvas, text: str, x: float, y: float, size: float) -> None:
+        """drawString `text` at (x, y) in canvas coordinates, run by run."""
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+        for i, run in self.runs(text):
+            name = self.name(i)
+            canvas.setFont(name, size)
+            canvas.drawString(x, y, run)
+            x += stringWidth(run, name, size)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,6 +319,10 @@ class FitzFontChain(_FontChain):
 
     def _has_glyph(self, i: int, ch: str) -> bool:
         return self.font(i).has_glyph(ord(ch)) != 0
+
+    def _ink_source(self, i: int):
+        path = self._sources[i].get("fontfile")
+        return (path, 0) if path else (bytes(self.font(i).buffer), 0)
 
     def font_for(self, ch: str):
         return self.font(self.index_for(ch))
